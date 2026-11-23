@@ -78,6 +78,14 @@ MVP 단계 (1~9):
    - 시연 가이드 `docs/demo-guide.md`: 점검표, 대본(문장 그대로), 문제 대처, 말해야 할 한계.
    - `npm.cmd run build` 성공(2026-11-20), `npm.cmd run start` 로 화면·이미지·교사 업무함 확인. `.claude/launch.json` 에 ondam-prod(3001) 추가.
    - `supabase/demo_reset.sql`: 테스트 계정 4개의 상담·메시지·Case·배정·동의·열람 기록만 삭제(계정·학생·담임 배정 유지, 재실행 안전). PGlite 로 다른 학부모 데이터는 안 지우는 것 확인. 실제 Supabase 에서는 아직 실행 안 함.
+   - 2026-11-20 저녁: 평가 1회 전부 통과(자동 149/149, 채점관 41/41) → 사용자 승인 후 테스트 데이터 삭제(상담 6·메시지 25·Case 1·열람 10, 계정·학생·담임 유지)
+     → `npm.cmd run build` 후 배포 모드(`ondam-prod`, 3000)로 실행, teacher1 업무함 0건 확인. 남은 것: 사용자 리허설, teacher2 로그인 확인, 시연 직전 재초기화.
+   - 2026-11-23 리허설 버그: 상담 종료 후 [새 상담 시작하기]가 가끔 예전 대화를 보여 줌.
+     원인: Next 16 Cache Components 는 떠난 화면을 React Activity 로 숨겨 보관(최대 3개) → `/parent/chat` 의 ChatView 상태(첫 메시지로 만든 상담)가 남아 있다가 다시 나타남.
+     수정: ChatView 가 새 상담 모드(initialId=null)일 때 useLayoutEffect 정리 함수로 숨겨질 때 상태 초기화 (Next 문서 preserving-ui-state 방식). 브라우저로 재현 경로 확인 완료.
+     같이: 로그아웃(`LogoutButton`)·로그인(`LoginCard`)은 `window.location` 으로 페이지를 완전히 새로 불러옴 — 같은 브라우저에서 다른 계정으로 바꿀 때 이전 사람 화면이 메모리에 남지 않게.
+     ⚠ 다른 화면도 "떠났다 돌아오면 상태가 남는다"는 점을 기억할 것 (새로 시작해야 하는 화면은 같은 방식으로 초기화).
+   - GitHub: https://github.com/hj332/P (공개, hj332 계정으로 push). 기획안·design/·eval/results/ 는 .gitignore 로 제외.
    - 2026-11-20 결정: 발표자 노트북에서만 시연 (배포 안 함). 나중에 여러 사람이 접속해야 하면 배포(Vercel 등) 필요.
 
 ## 주요 파일

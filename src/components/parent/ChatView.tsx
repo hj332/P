@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import { AiAvatar } from "@/components/brand/Logo";
 import { Icon } from "@/components/brand/icons";
 import { createSummary, retryReply, sendParentMessage, type ChatMessage } from "@/app/parent/actions";
@@ -58,6 +58,27 @@ export function ChatView({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, pending, showOffer]);
+
+  // "새 상담" 화면(/parent/chat)은 떠날 때마다 처음 상태로 되돌린다.
+  // Next.js 16(Cache Components)은 떠난 화면을 지우지 않고 숨겨서 보관한다(최대 3개, React Activity).
+  // 그냥 두면 첫 메시지로 만든 상담이 이 화면에 남아 있다가, 나중에 [새 상담 시작하기]를 눌렀을 때
+  // 이미 끝난 예전 대화가 다시 보인다. 숨겨질 때 실행되는 정리 함수에서 비운다.
+  // (node_modules/next/dist/docs/01-app/02-guides/preserving-ui-state.md 의 "새로 시작해야 하는 화면" 방식)
+  // (자녀 목록은 화면을 새로 받을 때마다 새 배열이 되므로 의존값에 넣지 않는다 — 대화 도중에 비워지지 않게)
+  const isNewChat = initialId === null;
+  const firstChildId = useRef(childList[0]?.id ?? null);
+  useLayoutEffect(() => {
+    if (!isNewChat) return;
+    const defaultChild = firstChildId.current;
+    return () => {
+      setConversationId(null);
+      setMessages([]);
+      setText("");
+      setError(null);
+      setOfferDismissedAt(-1);
+      setStudentId(defaultChild);
+    };
+  }, [isNewChat]);
 
   // 답변이 10초 넘게 걸리면 기다리는 중이라고 알려 준다 (무료 AI 는 붐빌 때 느리다)
   const [slow, setSlow] = useState(false);

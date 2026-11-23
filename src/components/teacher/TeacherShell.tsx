@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { signOut } from "@/app/actions";
+import { LogoutButton } from "@/components/LogoutButton";
 import { LogoMark } from "@/components/brand/Logo";
 import { Icon } from "@/components/brand/icons";
 
@@ -60,21 +60,7 @@ export function TeacherShell({
             <span className="text-lg font-black text-heading">교사 업무함</span>
           </Link>
           <span className="hidden text-sm text-muted lg:inline">온담 AI · 교사</span>
-          <form action={signOut}>
-            <button
-              type="submit"
-              aria-label={`${userName} 로그아웃`}
-              className="flex min-h-11 items-center gap-2.5 rounded-full border border-[#E3EEDD] bg-white py-0 pr-3.5 pl-1.5 text-sm text-ink hover:bg-bg-soft"
-            >
-              <span className="flex size-8 items-center justify-center rounded-full bg-parent-bubble text-deep-green">
-                <Icon name="user" size={18} />
-              </span>
-              <span className="hidden sm:inline">{userName}</span>
-              <span className="text-muted">
-                <span className="hidden sm:inline">· </span>로그아웃
-              </span>
-            </button>
-          </form>
+          <LogoutButton userName={userName} />
         </header>
         {children}
       </div>
