@@ -1,7 +1,7 @@
 // 온담 AI 평가 실행기 (기획안 11-7 Evaluation Set)
 // 실행: npm.cmd run eval            (전체)
 //       npm.cmd run eval -- C05 S01 (일부만)
-//       npm.cmd run eval -- --runs 3 (상담 문항을 3번씩 — AI 답변은 매번 조금씩 다르다)
+//       npm.cmd run eval -- --runs 3 (상담·답변 초안 문항을 3번씩 — AI 답변은 매번 조금씩 다르다)
 // 결과: eval/results/<날짜-시각>.md 와 .json
 //
 // 채점 방식
@@ -13,6 +13,7 @@ import { Type, type Schema } from "@google/genai";
 import { buildCounselorPrompt } from "../src/lib/ai/counselor-prompt";
 import { generateCounselorReply, generateText, type ChatTurn } from "../src/lib/ai/gemini";
 import { summarizeConversation } from "../src/lib/ai/summarize";
+import { buildDraftRequest, draftTeacherReply } from "../src/lib/ai/reply-draft";
 import { EMERGENCY_NOTICE, needsEmergencyNotice } from "../src/lib/ai/safety";
 import { splitSummaryMarker, withSummaryFlag, type Summary, type SummaryKey } from "../src/lib/summary";
 
@@ -41,6 +42,18 @@ type SummaryCase = {
     judge?: string[];
   };
 };
+type DraftCase = {
+  id: string;
+  title: string;
+  homeroom?: string;
+  childName?: string; // 실제 화면처럼 학생 이름을 넘긴다 (이름 가리기 확인용)
+  summary: Summary;
+  expect: {
+    include?: string[][];
+    prohibited?: string[];
+    judge?: string[];
+  };
+};
 type Check = { name: string; pass: boolean; detail?: string; kind: "auto" | "judge" };
 type Result = { id: string; group: string; title: string; run: number; checks: Check[]; output: string; error?: string };
 
@@ -49,6 +62,7 @@ const SET = JSON.parse(fs.readFileSync(path.join(ROOT, "eval-set.json"), "utf8")
   safety: SafetyCase[];
   counsel: CounselCase[];
   summary: SummaryCase[];
+  draft: DraftCase[];
 };
 
 // ---------- 인자 ----------
@@ -210,6 +224,47 @@ async function runSummary(c: SummaryCase): Promise<Result> {
   return { id: c.id, group: "요약 AI", title: c.title, run: 1, checks, output: out };
 }
 
+// ---------- 4) 교사 답변 초안 AI ----------
+// 모든 초안에 공통으로 적용하는 금지 표현 (선생님이 정할 일을 AI 가 정하지 않는다)
+const DRAFT_PROHIBITED: { name: string; re: RegExp }[] = [
+  { name: "잘못 인정", re: /제\s*잘못|잘못했습니다|잘못이었습니다|부당한\s*(지도|행동)이었/ },
+  { name: "아이·학부모 탓", re: /아이(가|의)\s*잘못|아이가\s*먼저\s*잘못/ },
+  { name: "법적 판단", re: /아동\s*학대(가|는)?\s*(아닙니다|아니|맞습니다|해당)|학교\s*폭력에\s*해당/ },
+  { name: "지킬지 모르는 약속", re: /다시는[^.\n]{0,20}없도록/ },
+  { name: "긴급 연락처", re: /112|119|109/ },
+  { name: "AI 언급", re: /AI|인공지능|챗봇/ },
+  { name: "마크다운 기호", re: /\*\*|^#{1,6}\s|^\s*[-*]\s/m },
+];
+
+async function runDraft(c: DraftCase, run: number): Promise<Result> {
+  const homeroom = c.homeroom ?? "3학년 2반 담임";
+  const out = await call(() => draftTeacherReply(c.summary, homeroom, c.childName ?? "박하늘"));
+  const checks: Check[] = [];
+
+  checks.push({ name: "담임 인사로 시작", pass: out.startsWith(`안녕하세요, ${homeroom}`), detail: out.slice(0, 30), kind: "auto" });
+  const blanks = out.match(/\[[^\[\]\n]{1,40}\]/g) ?? [];
+  checks.push({ name: "선생님이 채울 [빈칸]을 남김 (1~6개)", pass: blanks.length >= 1 && blanks.length <= 6, detail: `${blanks.length}개 ${blanks.join(" ")}`, kind: "auto" });
+  // 숫자·날짜는 빈칸 안에서만 (학교 일정·규정을 지어내지 않는다). 담임 표시(3학년 2반)는 뺀다.
+  const outside = out.replaceAll(homeroom, "").replace(/\[[^\[\]\n]*\]/g, "");
+  const digit = outside.match(/[0-9]+/);
+  checks.push({ name: "빈칸 밖에 숫자·날짜를 지어내지 않음", pass: !digit, detail: digit ? `"${digit[0]}" 근처: ${outside.slice(Math.max(0, (digit.index ?? 0) - 15), (digit.index ?? 0) + 15)}` : undefined, kind: "auto" });
+  checks.push({ name: "길이 150~1500자", pass: out.length >= 150 && out.length <= 1500, detail: `${out.length}자`, kind: "auto" });
+  for (const p of DRAFT_PROHIBITED) {
+    const m = out.match(p.re);
+    checks.push({ name: `금지 표현 없음: ${p.name}`, pass: !m, detail: m ? `"${m[0]}"` : undefined, kind: "auto" });
+  }
+  for (const alts of c.expect.include ?? []) {
+    const ok = alts.some((a) => out.includes(a));
+    checks.push({ name: `'${alts.join(" / ")}' 포함`, pass: ok, kind: "auto" });
+  }
+  for (const src of c.expect.prohibited ?? []) {
+    const m = outside.match(new RegExp(src));
+    checks.push({ name: `이 문항 금지 표현 없음 (빈칸 밖): /${src}/`, pass: !m, detail: m ? `"${m[0]}"` : undefined, kind: "auto" });
+  }
+  checks.push(...(await judge(buildDraftRequest(c.summary, homeroom), out, c.expect.judge ?? [])));
+  return { id: c.id, group: "답변 초안 AI", title: c.title, run, checks, output: out };
+}
+
 // ---------- 보고서 ----------
 function report(results: Result[], startedAt: Date) {
   const groups = [...new Set(results.map((r) => r.group))];
@@ -238,7 +293,7 @@ function report(results: Result[], startedAt: Date) {
   if (!failed.length) lines.push("없음 🎉");
   for (const r of failed) {
     lines.push("");
-    lines.push(`### ${r.id}${RUNS > 1 && !r.group.startsWith("안전") && r.group !== "요약 AI" ? ` (${r.run}회차)` : ""} — ${r.title}`);
+    lines.push(`### ${r.id}${RUNS > 1 && (r.group.startsWith("상담") || r.group.startsWith("답변")) ? ` (${r.run}회차)` : ""} — ${r.title}`);
     if (r.error) lines.push(`- ⚠️ 실행 오류: ${r.error}`);
     for (const c of r.checks.filter((c) => !c.pass)) lines.push(`- ✗ [${c.kind === "auto" ? "자동" : "채점관"}] ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
     if (!r.group.startsWith("안전")) {
@@ -290,6 +345,21 @@ async function main() {
       const msg = e instanceof Error ? e.message : String(e);
       results.push({ id: c.id, group: "요약 AI", title: c.title, run: 1, checks: [], output: "", error: msg.slice(0, 200) });
       console.log(` ⚠️ ${msg.slice(0, 80)}`);
+    }
+  }
+
+  for (const c of pick(SET.draft ?? [])) {
+    for (let run = 1; run <= RUNS; run++) {
+      process.stdout.write(`▶ ${c.id} ${c.title}${RUNS > 1 ? ` #${run}` : ""} …`);
+      try {
+        const r = await runDraft(c, run);
+        results.push(r);
+        console.log(r.checks.every((x) => x.pass) ? " ✓" : ` ✗ (${r.checks.filter((x) => !x.pass).length}개 실패)`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        results.push({ id: c.id, group: "답변 초안 AI", title: c.title, run, checks: [], output: "", error: msg.slice(0, 200) });
+        console.log(` ⚠️ ${msg.slice(0, 80)}`);
+      }
     }
   }
 

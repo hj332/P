@@ -10,6 +10,9 @@ export type ConversationItem = {
   status: string;
   createdAt: string;
   title: string;
+  // 학교에 전달된 상담이면 그 문의(Case)
+  caseId: string | null;
+  caseStatus: string | null;
 };
 
 export type ChildItem = { id: string; label: string; classLabel: string | null };
@@ -22,7 +25,7 @@ export async function getParentContext() {
     supabase.from("students").select("id, name, classes(grade, class_no)").order("name"),
     supabase
       .from("conversations")
-      .select("id, status, created_at, summary_draft, messages(content, role, created_at)")
+      .select("id, status, created_at, summary_draft, messages(content, role, created_at), cases(id, status)")
       .eq("messages.role", "parent")
       .order("created_at", { ascending: false })
       .order("created_at", { referencedTable: "messages", ascending: true })
@@ -40,11 +43,16 @@ export async function getParentContext() {
     .map((c) => {
       const topic = (c.summary_draft as { topic?: string } | null)?.topic;
       const first = (c.messages as { content: string }[] | null)?.[0]?.content;
+      // cases.conversation_id 가 unique 라 하나(또는 없음)만 온다
+      const cs = c.cases as unknown as { id: string; status: string } | { id: string; status: string }[] | null;
+      const kase = Array.isArray(cs) ? cs[0] : cs;
       return {
         id: c.id,
         status: c.status,
         createdAt: c.created_at,
         title: topic || (first ? first.slice(0, 28) + (first.length > 28 ? "…" : "") : "새 상담"),
+        caseId: kase?.id ?? null,
+        caseStatus: kase?.status ?? null,
       };
     })
     // 아직 한마디도 하지 않은 빈 상담은 목록에서 뺀다
@@ -79,7 +87,7 @@ export async function getConversation(
       .select("id, role, content")
       .eq("conversation_id", conv.id)
       .order("created_at", { ascending: true }),
-    supabase.from("cases").select("status, final_summary").eq("conversation_id", conv.id).maybeSingle(),
+    supabase.from("cases").select("id, status, final_summary").eq("conversation_id", conv.id).maybeSingle(),
   ]);
 
   const cls = (conv.students as unknown as { classes: { grade: number; class_no: number } | null } | null)?.classes;
@@ -90,8 +98,60 @@ export async function getConversation(
     summaryDraft: conv.summary_draft as unknown,
     classLabel: cls ? `${cls.grade}학년 ${cls.class_no}반` : null,
     messages: ((messages ?? []) as ChatMessage[]).map(withSummaryFlag),
+    caseId: (caseRow?.id as string | undefined) ?? null,
     caseStatus: (caseRow?.status as string | undefined) ?? null,
     finalSummary: (caseRow?.final_summary as unknown) ?? null,
+  };
+}
+
+// 선생님 답변 확인 화면 (/parent/cases/[caseId]). 학부모 RLS 라 본인 Case 만 나온다.
+export async function getParentCase(
+  supabase: Awaited<ReturnType<typeof getParentContext>>["supabase"],
+  caseId: string,
+) {
+  if (!/^[0-9a-f-]{36}$/i.test(caseId)) return null;
+
+  const { data } = await supabase
+    .from("cases")
+    .select(
+      "id, status, created_at, teacher_viewed_at, escalated_at, shared_manager_at, shared_admin_at, parent_confirmed_at, final_summary, conversation_id, " +
+        "conversations(created_at), students(name, classes(grade, class_no)), case_replies(body, author_name, created_at)",
+    )
+    .eq("id", caseId)
+    .maybeSingle();
+  if (!data) return null;
+
+  const row = data as unknown as {
+    id: string;
+    status: string;
+    created_at: string;
+    teacher_viewed_at: string | null;
+    escalated_at: string | null;
+    shared_manager_at: string | null;
+    shared_admin_at: string | null;
+    parent_confirmed_at: string | null;
+    final_summary: unknown;
+    conversation_id: string;
+    conversations: { created_at: string } | null;
+    students: { name: string; classes: { grade: number; class_no: number } | null } | null;
+    case_replies: { body: string; author_name: string; created_at: string }[] | null;
+  };
+  const replies = [...(row.case_replies ?? [])].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const cls = row.students?.classes;
+  return {
+    id: row.id,
+    status: row.status,
+    conversationId: row.conversation_id,
+    consultedAt: row.conversations?.created_at ?? row.created_at,
+    sentAt: row.created_at,
+    viewedAt: row.teacher_viewed_at,
+    escalatedAt: row.escalated_at,
+    sharedManagerAt: row.shared_manager_at,
+    sharedAdminAt: row.shared_admin_at,
+    confirmedAt: row.parent_confirmed_at,
+    finalSummary: row.final_summary,
+    classLabel: cls ? `${cls.grade}학년 ${cls.class_no}반` : null,
+    replies: replies.map((r) => ({ body: r.body, authorName: r.author_name, createdAt: r.created_at })),
   };
 }
 

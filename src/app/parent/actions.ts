@@ -269,3 +269,15 @@ export async function continueConsultation(conversationId: string): Promise<Acti
   });
   return error ? { ok: false, error: "상담으로 돌아가지 못했어요." } : { ok: true };
 }
+
+// ---------- [답변 잘 받았어요] (선생님 답변 확인 → 문의 마무리) ----------
+export async function confirmReply(caseId: string): Promise<ActionResult> {
+  const { supabase } = await requireRole(["PARENT"]);
+  if (!/^[0-9a-f-]{36}$/i.test(caseId)) return { ok: false, error: "문의를 찾을 수 없어요." };
+  const { error } = await supabase.rpc("confirm_case_reply", { p_case_id: caseId });
+  if (error) {
+    console.error("[confirm_reply]", error.message);
+    return { ok: false, error: "확인을 전하지 못했어요. 잠시 후 다시 시도해 주세요." };
+  }
+  return { ok: true };
+}

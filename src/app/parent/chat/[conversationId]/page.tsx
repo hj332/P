@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { GREETING } from "@/lib/ai/counselor-prompt";
+import { hasReply } from "@/lib/cases";
 import { ChatView } from "@/components/parent/ChatView";
 import { ParentShell, ProgressPanel } from "@/components/parent/ParentShell";
 import { formatKoreanDateTime, getConversation, getParentContext } from "../../data";
@@ -38,6 +39,7 @@ async function ChatPage({ params }: { params: Promise<{ conversationId: string }
         conversationId={conv.id}
         status={conv.status}
         initialMessages={conv.messages}
+        replyHref={conv.caseId && hasReply(conv.caseStatus) ? `/parent/cases/${conv.caseId}` : null}
       />
     </ParentShell>
   );

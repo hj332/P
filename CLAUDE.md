@@ -7,7 +7,8 @@
 핵심 원칙: **상담 ≠ 민원 접수** — 학부모가 AI 요약을 확인·수정하고 동의했을 때만 Case 가 생기고 교사에게 간다.
 
 ## ▶ 지금 할 일 (2026-11-23)
-- MVP(아래 1~9단계) 완료. **다음은 v2 — `docs/v2-plan.md` 를 먼저 읽고 A 단계(교사 답변 → 학부모 확인, 관리자 이관)부터.**
+- MVP(아래 1~9단계) 완료. v2 A 단계(교사 답변 → 학부모 확인, 관리자 이관) 완료 — 아래 "v2 A" 참고.
+- **다음은 v2 B 단계 (`docs/v2-plan.md`): 위험도 표시·반복 민원·관리자 화면.** A 단계 커밋·push 는 사용자 확인 후.
 - 결정: 가상 데이터로 내부 시연·소규모 시범만. 기획안의 "별도 긴급 안전 프로토콜"은 제외(학부모 동의 없이는 어떤 경우에도 전달 안 함). MVP 최소 안전장치(safety.ts)는 유지. 위험도 분류는 표시만.
 - 추가로 넣기로 한 것: 선생님 답변 → 학부모 확인, 반복 민원 처리(9장).
 - 시연 관련 남은 일: 리허설, teacher2 로그인 확인, 시연 직전 초기화 + `npm.cmd run build` (`docs/demo-guide.md`).
@@ -94,6 +95,45 @@ MVP 단계 (1~9):
      ⚠ 다른 화면도 "떠났다 돌아오면 상태가 남는다"는 점을 기억할 것 (새로 시작해야 하는 화면은 같은 방식으로 초기화).
    - GitHub: https://github.com/hj332/P (공개, hj332 계정으로 push). 기획안·design/·eval/results/ 는 .gitignore 로 제외.
    - 2026-11-20 결정: 발표자 노트북에서만 시연 (배포 안 함). 나중에 여러 사람이 접속해야 하면 배포(Vercel 등) 필요.
+
+v2 단계:
+- ✅ A. 흐름 완성 (2026-11-23) — 교사 답변 + AI 초안, 학부모 답변 확인, 관리자 이관 + 관리자 최소 목록
+   - DB `supabase/migrations/0003_replies_escalation.sql` (여러 번 실행 가능, 실제 Supabase 적용 완료):
+     `case_replies`(답변, author_name 은 보낼 때의 교사 표시 이름 — 학부모에게 교사 프로필을 열지 않으려고),
+     `assignments.kind`(HOMEROOM/ESCALATION), `cases.teacher_viewed_at / escalated_at / parent_confirmed_at`.
+     함수: `reply_to_case`(담임만, 1회 → RESOLVED) / `escalate_case`(담임, NEW·확인 중일 때만 → ESCALATED, 같은 학교 ADMIN 전원 배정) /
+     `confirm_case_reply`(학부모, RESOLVED → CLOSED) / `open_case` 갱신(관리자가 열면 ESCALATED → ADMIN_REVIEWING). 전부 audit_logs 기록.
+     RLS: case_replies 는 "볼 수 있는 Case 의 답변만"(cases RLS 재사용), 관리자는 이관된 Case·그 학생·학급·학부모 이름만. 관리자도 원문 못 봄. A 에서는 관리자가 답변하지 않음.
+   - 관리자 계정: `supabase/seed_admin.sql` (admin1@example.com, "교감 선생님"). `demo_reset.sql` 도 답변·관리자 기록까지 지움(PGlite 로 다른 학부모 데이터 보존 확인).
+   - 권한 점검 `rls_check.sql` 100개 (PGlite 2회 + 실제 Supabase 통과, 이후 보완으로 131개). 일부러 정책을 풀면 해당 6개가 실패하는 것도 확인.
+     PGlite 시험 도구는 세션 scratchpad 의 `pgtest/rls3.mjs`(0001→0002→seed→0003×2→seed_admin→rls_check×2) — 없으면 `@electric-sql/pglite` 로 다시 만든다.
+   - AI 답변 초안 `src/lib/ai/reply-draft.ts`: final_summary 만 입력(대화 원문 X). 학교 쪽 사실·날짜·규정·계획은 `[빈칸]`, 학부모 이야기를 사실로도 "다르다"로도 전제하지 않음, 사과·잘못 인정·법적 판단·약속 금지.
+     아이 이름은 코드로 가림(`maskChildName`: AI 에 보내기 전 + 받은 뒤. 지침만으로는 2회 중 1회 이름을 씀). 단점: 이름이 흔한 낱말("바다")이면 그 낱말도 "아이"로 바뀜.
+     초안은 저장하지 않고 입력칸에만 넣음. 빈칸이 남은 채 보내려 하면 한 번 경고([그래도 보내기]).
+   - 화면: 교사 `InboxView`(필터 전체/미확인/답변 대기/답변 완료, 상세 아래 답변 작성·AI 초안·관리자와 공유, 보낸 답변·학부모 확인 여부 표시) — 관리자 `/admin` 도 같은 컴포넌트(mode="admin", 버튼 없음).
+     `TeacherShell area="admin"`. 열람 기록 route 는 `/teacher|admin/cases/[id]/open` → `src/lib/open-case-route.ts`.
+     학부모: 사이드바 "선생님 답변 도착"(→ `/parent/cases/[caseId]`), 상태 표시 "학교 전달 완료 · 선생님 답변 도착", 채팅 화면 배너 [선생님 답변 보기],
+     답변 화면 `src/app/parent/cases/[caseId]/page.tsx` + `ReplyConfirm`(답변 잘 받았어요 → 마무리 / 추가로 문의할게요 → 새 상담). 상담 가능시간 신청은 D.
+     역할별 첫 화면 `src/lib/roles.ts` `homePathFor` (ADMIN → /admin). 교사 업무함은 TEACHER·MANAGER 만.
+   - 평가: `eval-set.json` 에 답변 초안 D01~D07 추가(`eval/run.ts` runDraft). 전체 --runs 2: 자동 442/443, 채점관 115/115 → 실패 1건(학부모 이야기와 "차이가 있다"고 전제) 지침 보강 후 D01·D03 3회 모두 통과.
+   - 2026-11-23 브라우저 확인(teacher1·admin1·parent1, 로그인은 사용자): AI 초안 → 빈칸 경고 → 답변(RESOLVED) / 관리자와 공유(ESCALATED) → 관리자 목록 1건만·열면 ADMIN_REVIEWING, 관리자가 /teacher·/parent 가면 /admin 으로
+     → 학부모 사이드바·상태 표시·답변 화면·[답변 잘 받았어요](CLOSED). 실제 DB 상태·audit_logs 도 일치.
+   - 남은 약점: 좁은 화면에서는 학부모 사이드바가 숨겨져 "답변 도착"을 해당 상담 채팅 화면 배너로만 알 수 있음(D 모바일 작업 때 함께). `/parent` 첫 화면은 여전히 진행 중 상담/새 상담으로 보냄.
+   - `.claude/launch.json` 에 `ondam-attach`(이미 3000 에서 도는 서버에 붙기) 추가.
+   - **A 보완 (2026-11-23 사용자 요청): 학년부장 + 공유 대상 선택 + 공유 메모** — 실제 Supabase 적용·브라우저 확인 완료
+     - 계정: admin1 = 교장·교감 공동 계정(ADMIN, "교장·교감 선생님"), admin2 = 3학년 부장(MANAGER, "3학년 부장 선생님"). `seed_admin.sql` 이 둘 다 만듦/이름 맞춤.
+     - `0004_manager_escalation.sql`: `manager_grades`(학년부장 담당 학년), `cases.shared_manager_at / shared_admin_at`, `assignments.viewed_at`(받은 사람별 열람).
+       `escalate_case(id, target)` — 담임이 MANAGER(그 학생 학년의 부장)/ADMIN 고름, 답변 전·대상마다 1회. 두 번째 공유 때 상태를 ESCALATED 로 되돌림(새로 받은 사람이 아직 안 봤으므로).
+     - `0005_manager_forward_notes.sql`: 학년부장도 교장·교감에게 다시 공유 가능(ADMIN 만). `case_share_notes`(공유 메모, 1000자, 교직원만 — 학부모는 자기 Case 라도 못 봄).
+       `escalate_case(id, target, note)` 로 바뀜. 0004 이전 열람은 audit_logs 로 viewed_at 채움. audit action 은 `ESCALATE_CASE_MANAGER/ADMIN`.
+     - 답변은 여전히 담임만. 학년부장·교장·교감은 보기·협의·(학년부장만) 재공유.
+     - 화면: 담임 상세에 [관리자와 공유] → 대상 라디오 + 메모 → [공유하기] (`SharePanel`), 공유 메모 목록(`ShareNotes`), "학년부장/교장·교감 선생님과 공유함" 칩.
+       `/admin` 은 ADMIN·MANAGER 공용(`viewerRole`), "확인 전/확인 중"은 Case 상태가 아니라 내 `myViewedAt` 기준. MANAGER 첫 화면도 /admin.
+       학부모 답변 화면에는 "학년부장 선생님, 교장·교감 선생님과 함께 확인한 문의예요"처럼 실제 공유 대상만 표시.
+     - 권한 점검 131개. **실제 DB 에 이미 공유된 문의가 있으면 처음 4개가 틀렸던 문제**(관리자가 처음엔 0건이라고 가정) → 테스트가 만든 Case 만 세거나 테스트 전 기준값과 비교하도록 고침.
+       PGlite 도구 `pgtest/rls5.mjs` (인자 `realdata` = 이미 공유·답변된 문의가 있는 상태로 실행). 빈 DB·realdata 둘 다 131/131, 메모 학부모 차단을 풀면 실패하는 것 확인.
+     - 기획안 `# 온담 전체 기획안.txt` 의 "관리자 이관" 9곳을 지금 구조(학년부장/교장·교감 공유, 재공유, 공유 메모, 답변은 담임)로 수정. 원본 백업은 그 세션 scratchpad.
+     - 브라우저 확인(parent1 새 문의 → teacher1 학년부장 공유+메모 → admin2 메모 보고 교장·교감 공유+메모 → admin1 메모 2개·확인 전→확인 중, 버튼 없음).
 
 ## 주요 파일
 - `src/lib/supabase/{client,server,proxy}.ts`, `src/proxy.ts`, `src/lib/auth.ts` (requireRole)

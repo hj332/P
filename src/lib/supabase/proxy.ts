@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // 로그인이 필요한 경로. 이곳의 검사는 화면 이동용일 뿐이고,
 // 실제 데이터 접근 권한은 DB의 RLS가 막는다.
-const PROTECTED_PREFIXES = ["/parent", "/teacher"];
+const PROTECTED_PREFIXES = ["/parent", "/teacher", "/admin"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });

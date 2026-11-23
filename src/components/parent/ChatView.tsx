@@ -18,6 +18,7 @@ export function ChatView({
   conversationId: initialId,
   status,
   initialMessages,
+  replyHref = null,
 }: {
   greeting: string;
   dateLabel: string | null;
@@ -25,6 +26,8 @@ export function ChatView({
   conversationId: string | null;
   status: string | null;
   initialMessages: ChatMessage[];
+  // 학교에 전달한 상담에 선생님 답변이 왔으면 답변 화면 주소
+  replyHref?: string | null;
 }) {
   const router = useRouter();
   const [conversationId, setConversationId] = useState(initialId);
@@ -269,9 +272,22 @@ export function ChatView({
         {!open && conversationId && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-line bg-white px-5 py-4">
             <span className="text-[15px] text-body">
-              {status === "CLOSED_AI" ? "상담만 하고 마친 대화예요. 학교에 전달되지 않았어요." : "학교에 전달된 상담이에요. 더 이야기하려면 새 상담을 시작해 주세요."}
+              {status === "CLOSED_AI"
+                ? "상담만 하고 마친 대화예요. 학교에 전달되지 않았어요."
+                : replyHref
+                  ? "선생님 답변이 도착했어요. 더 이야기하려면 새 상담을 시작해 주세요."
+                  : "학교에 전달된 상담이에요. 더 이야기하려면 새 상담을 시작해 주세요."}
             </span>
             <div className="flex flex-wrap gap-2">
+              {replyHref && (
+                <Link
+                  href={replyHref}
+                  className="inline-flex min-h-11 items-center gap-2 rounded-full bg-deep-green px-5 text-[15px] font-bold text-white"
+                >
+                  <Icon name="chat" size={18} />
+                  선생님 답변 보기
+                </Link>
+              )}
               {status !== "CLOSED_AI" && (
                 <Link
                   href={`/parent/chat/${conversationId}/summary`}
@@ -282,7 +298,10 @@ export function ChatView({
               )}
               <Link
                 href="/parent/chat"
-                className="inline-flex min-h-11 items-center rounded-full bg-deep-green px-5 text-[15px] font-bold text-white"
+                className={
+                  "inline-flex min-h-11 items-center rounded-full px-5 text-[15px] font-bold " +
+                  (replyHref ? "border-[1.5px] border-[#CFDCCB] text-deep-green" : "bg-deep-green text-white")
+                }
               >
                 새 상담 시작하기
               </Link>

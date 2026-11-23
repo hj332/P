@@ -4,6 +4,7 @@ import { LogoutButton } from "@/components/LogoutButton";
 import { LogoMark } from "@/components/brand/Logo";
 import { Icon } from "@/components/brand/icons";
 import { statusLabel } from "@/lib/summary";
+import { hasReply } from "@/lib/cases";
 import { formatShortDate, type ConversationItem } from "@/app/parent/data";
 
 // 학부모 화면 틀 (design/screens/ParentChat.html): 헤더 + 왼쪽 상담 내역 + 본문 + (선택) 오른쪽 패널
@@ -72,7 +73,8 @@ export function StatusPill({ status, caseStatus }: { status: string | null; case
     return (
       <span className="inline-flex min-h-10 items-center gap-2 rounded-full text-[13px] sm:text-[15px] bg-deep-green px-3.5 sm:px-[18px] text-white">
         <span className="size-[9px] rounded-full bg-logo-lime" />
-        학교 전달 완료 · 담임 선생님 {reviewing ? "확인 중" : "확인 대기"}
+        {/* DESIGN.md 2장: RESOLVED(답변 등록) → 학교 전달 완료 · 선생님 답변 도착 */}
+        학교 전달 완료 · {hasReply(caseStatus) ? "선생님 답변 도착" : `담임 선생님 ${reviewing ? "확인 중" : "확인 대기"}`}
       </span>
     );
   }
@@ -138,9 +140,12 @@ function ConversationSidebar({ conversations, currentId }: { conversations: Conv
 
 function SidebarItem({ c, current }: { c: ConversationItem; current: boolean }) {
   const sent = c.status === "CASE_CREATED" || c.status === "CONSENTED";
+  // 선생님 답변이 온 상담은 답변 화면으로 바로 간다
+  const replied = hasReply(c.caseStatus);
+  const label = c.caseStatus === "CLOSED" ? "상담 완료" : replied ? "선생님 답변 도착" : statusLabel(c.status);
   return (
     <Link
-      href={`/parent/chat/${c.id}`}
+      href={replied && c.caseId ? `/parent/cases/${c.caseId}` : `/parent/chat/${c.id}`}
       aria-current={current ? "page" : undefined}
       className={
         "flex flex-col gap-1.5 rounded-[14px] p-3.5 text-ink " +
@@ -149,8 +154,17 @@ function SidebarItem({ c, current }: { c: ConversationItem; current: boolean }) 
     >
       <strong className={"text-[15px] " + (current ? "font-bold" : "font-medium")}>{c.title}</strong>
       <span className="flex items-center gap-1.5 text-xs text-[#4D6157]">
-        <span className={"rounded-md px-2 py-0.5 " + (sent ? "bg-[#DCEFC9] font-bold text-ok-fg" : "bg-[#EEF2EC]")}>
-          {statusLabel(c.status)}
+        <span
+          className={
+            "rounded-md px-2 py-0.5 " +
+            (replied && c.caseStatus !== "CLOSED"
+              ? "bg-highlight font-bold text-heading"
+              : sent
+                ? "bg-[#DCEFC9] font-bold text-ok-fg"
+                : "bg-[#EEF2EC]")
+          }
+        >
+          {label}
         </span>
         {formatShortDate(c.createdAt)}
       </span>

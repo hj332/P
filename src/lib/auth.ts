@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { homePathFor, type Role } from "@/lib/roles";
 
-export type Role = "PARENT" | "TEACHER" | "MANAGER" | "ADMIN";
+export type { Role };
 
 // 로그인 사용자와 프로필을 가져온다. 역할이 맞지 않으면 알맞은 화면으로 보낸다.
 // (화면 이동용 확인일 뿐, 데이터 접근은 DB의 RLS가 막는다.)
@@ -22,7 +23,7 @@ export async function requireRole(allowed: Role[]) {
   if (!profile) redirect("/login");
 
   if (!allowed.includes(profile.role as Role)) {
-    redirect(profile.role === "PARENT" ? "/parent" : "/teacher");
+    redirect(homePathFor(profile.role));
   }
 
   return { supabase, profile };

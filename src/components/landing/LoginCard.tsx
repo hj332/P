@@ -4,6 +4,7 @@ import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { LogoMark } from "@/components/brand/Logo";
 import { Icon } from "@/components/brand/icons";
+import { homePathFor } from "@/lib/roles";
 import { SCHOOL_NAME } from "./content";
 
 // design/screens/Main.html 의 로그인 카드.
@@ -66,10 +67,9 @@ export function LoginCard({ id }: { id?: string }) {
       return;
     }
 
-    // 관리자 화면은 아직 없어서 교사 업무함으로 보낸다.
     // 페이지를 완전히 새로 불러와 이동한다: 이 브라우저에 숨겨 보관된 이전 화면(다른 사람의 화면일 수 있음)과
     // 입력했던 비밀번호를 메모리에서 모두 비운다.
-    window.location.assign(profile.role === "PARENT" ? "/parent" : "/teacher/inbox");
+    window.location.assign(homePathFor(profile.role));
   }
 
   return (
