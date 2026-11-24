@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { classifyCase } from "@/lib/ai/classify";
 
 // POST /teacher/cases/[caseId]/open, /admin/cases/[caseId]/open 의 공통 처리.
 // 교사·관리자가 Case 상세를 실제로 열었을 때 브라우저가 부른다.
@@ -20,6 +21,18 @@ export async function handleOpenCase(caseId: string) {
   if (error) {
     console.error("[open_case]", error.message);
     return NextResponse.json({ ok: false }, { status: 403 });
+  }
+
+  // 아직 AI 분류가 안 된 문의면(전달 직후 분류가 Gemini 혼잡으로 실패한 경우 등) 지금 다시 분류한다.
+  // 권한은 바로 위 open_case() 가 확인했다. 분류가 끝나면 화면이 다시 불러오도록 classified 를 돌려준다.
+  const { data: risk } = await supabase.from("risk_assessments").select("llm_level").eq("case_id", caseId).maybeSingle();
+  if (!risk || risk.llm_level === null) {
+    try {
+      await classifyCase(caseId);
+      return NextResponse.json({ ok: true, classified: true });
+    } catch (e) {
+      console.error("[classify on open]", e instanceof Error ? e.message : e);
+    }
   }
   return NextResponse.json({ ok: true });
 }

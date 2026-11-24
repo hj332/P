@@ -73,3 +73,22 @@ export async function escalateCase(caseId: string, target: ShareTarget, note = "
   }
   return { ok: true };
 }
+
+// [메모 남기기] 교장·교감이 공유받은 문의에 담임(TEACHER)·학년부장(MANAGER) 앞으로 메모를 남긴다 (DB 함수 add_case_note).
+// 학년부장 앞 메모는 아직 학년부장과 공유되지 않은 문의라면 그 학년 학년부장에게도 공유된다.
+export async function addCaseNote(caseId: string, target: "TEACHER" | "MANAGER", note: string): Promise<TeacherActionResult> {
+  const { supabase } = await requireRole(["ADMIN"]);
+  if (!UUID.test(caseId)) return { ok: false, error: "문의를 찾을 수 없어요." };
+  if (target !== "TEACHER" && target !== "MANAGER") return { ok: false, error: "메모 받을 선생님을 골라 주세요." };
+  const memo = note.trim();
+  if (!memo) return { ok: false, error: "메모 내용을 입력해 주세요." };
+  if (memo.length > 1000) return { ok: false, error: "메모는 1000자까지 쓸 수 있어요." };
+
+  const { error } = await supabase.rpc("add_case_note", { p_case_id: caseId, p_target: target, p_note: memo });
+  if (error) {
+    console.error("[add_case_note]", error.message);
+    if (error.message.includes("학년부장 계정이 없어")) return { ok: false, error: "이 학년의 학년부장 선생님이 등록되어 있지 않아요." };
+    return { ok: false, error: "메모를 남기지 못했어요. 잠시 후 다시 시도해 주세요." };
+  }
+  return { ok: true };
+}

@@ -8,6 +8,7 @@ const AREAS = {
   teacher: {
     section: "교사",
     href: "/teacher/inbox",
+    archiveHref: "/teacher/archive",
     nav: "교사 업무함",
     noteTitle: "학부모가 동의한 내용만",
     note: "학부모가 직접 확인하고 전달에 동의한 요약만 이곳에 와요. AI와 나눈 대화 원문과 ‘상담만 종료’한 상담은 볼 수 없어요.",
@@ -16,6 +17,7 @@ const AREAS = {
   admin: {
     section: "관리자",
     href: "/admin",
+    archiveHref: "/admin/archive",
     nav: "공유받은 문의",
     noteTitle: "담임이 공유한 문의만",
     note: "담임 선생님(또는 학년부장 선생님)이 공유한 문의만 이곳에 와요. 학부모가 확인한 요약과 답변만 보이고, 대화 원문은 볼 수 없어요.",
@@ -28,14 +30,22 @@ export function TeacherShell({
   userName,
   newCount,
   area = "teacher",
+  current = "inbox",
+  archivedCount = 0,
   children,
 }: {
   userName: string;
   newCount: number;
   area?: keyof typeof AREAS;
+  // 지금 보고 있는 메뉴: 업무함(답변 대기·최근) / 지난 문의함(답변 후 2일 지난 문의)
+  current?: "inbox" | "archive";
+  archivedCount?: number;
   children: ReactNode;
 }) {
   const a = AREAS[area];
+  const navClass = (on: boolean) =>
+    "flex min-h-[46px] items-center gap-3 rounded-xl px-3 text-[15px] " +
+    (on ? "bg-ai-bubble font-bold text-white" : "text-[#D9EBDF] hover:bg-[#1C5E49]");
   return (
     <div className="flex min-h-dvh items-stretch bg-[#F6F9F3] text-ink">
       <nav
@@ -50,11 +60,7 @@ export function TeacherShell({
         </Link>
         <div className="flex flex-col gap-1">
           <span className="px-3 pb-1.5 text-xs font-bold tracking-[1px] text-[#9CC4AE]">{a.section}</span>
-          <Link
-            href={a.href}
-            aria-current="page"
-            className="flex min-h-[46px] items-center gap-3 rounded-xl bg-ai-bubble px-3 text-[15px] font-bold text-white"
-          >
+          <Link href={a.href} aria-current={current === "inbox" ? "page" : undefined} className={navClass(current === "inbox")}>
             <Icon name="fileText" />
             {a.nav}
             {newCount > 0 && (
@@ -62,6 +68,15 @@ export function TeacherShell({
                 {newCount}
               </span>
             )}
+          </Link>
+          <Link
+            href={a.archiveHref}
+            aria-current={current === "archive" ? "page" : undefined}
+            className={navClass(current === "archive")}
+          >
+            <Icon name="clock" />
+            지난 문의함
+            {archivedCount > 0 && <span className="ml-auto text-[13px] text-[#9CC4AE]">{archivedCount}</span>}
           </Link>
         </div>
         <div className="mt-auto flex flex-col gap-2 rounded-2xl bg-[#1C5E49] p-4 text-[13px] leading-[1.6]">
@@ -77,7 +92,15 @@ export function TeacherShell({
         <header className="flex flex-wrap items-center justify-between gap-3.5 border-b border-[#E3EEDD] bg-white px-4 py-3.5 sm:px-8">
           <Link href={a.href} className="flex items-center gap-2.5 lg:hidden">
             <LogoMark size={36} />
-            <span className="text-lg font-black text-heading">{a.nav}</span>
+            <span className="text-lg font-black text-heading">{current === "archive" ? "지난 문의함" : a.nav}</span>
+          </Link>
+          {/* 좁은 화면: 사이드바 대신 업무함 ↔ 지난 문의함 바로가기 */}
+          <Link
+            href={current === "archive" ? a.href : a.archiveHref}
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line px-3 text-sm font-bold text-deep-green lg:hidden"
+          >
+            <Icon name={current === "archive" ? "fileText" : "clock"} size={16} />
+            {current === "archive" ? a.nav : "지난 문의함"}
           </Link>
           <span className="hidden text-sm text-muted lg:inline">{a.header}</span>
           <LogoutButton userName={userName} />

@@ -1,10 +1,11 @@
 import { Suspense } from "react";
 import { InboxView } from "@/components/teacher/InboxView";
 import { Kpi, TeacherShell } from "@/components/teacher/TeacherShell";
+import { SchoolStats } from "@/components/admin/SchoolStats";
 import { getAdminCases } from "../teacher/data";
 
 // 공유받은 문의 최소 목록 — 교장·교감(ADMIN)·학년부장(MANAGER)에게 담임이 공유한 문의만 보인다 (DB RLS).
-// AdminDashboard.html 의 통계·고위험 표시는 B 단계에서 만든다.
+// 교장·교감에게는 위에 학교 익명 통계(school_stats)도 보인다 (v2 B). 고위험·반복은 건수만, 내용은 공유받은 문의만.
 export default function Page() {
   return (
     <Suspense fallback={<p className="p-6 text-muted">불러오는 중…</p>}>
@@ -14,14 +15,14 @@ export default function Page() {
 }
 
 async function AdminList() {
-  const { profile, cases } = await getAdminCases();
+  const { profile, cases, archived, stats } = await getAdminCases();
   // "확인 전"은 내가 아직 열지 않은 문의 (공유받은 사람마다 따로)
   const unseen = cases.filter((c) => !c.reply && !c.myViewedAt).length;
   const waiting = cases.filter((c) => !c.reply).length;
   const roleLabel = profile.role === "MANAGER" ? "학년부장" : "교장·교감";
 
   return (
-    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen}>
+    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen} archivedCount={archived.length}>
       <main className="flex flex-col gap-[26px] px-4 pt-[30px] pb-12 sm:px-8">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm text-muted">{roleLabel} · 담임 선생님이 공유한 문의</span>
@@ -39,7 +40,9 @@ async function AdminList() {
           <Kpi label="답변 대기" value={waiting} sub="담임 선생님이 아직 답변하지 않은 문의" />
         </div>
 
-        <InboxView cases={cases} mode="admin" viewerRole={profile.role} />
+        <InboxView cases={cases} others={archived} mode="admin" viewerRole={profile.role} />
+
+        {stats && <SchoolStats s={stats} />}
       </main>
     </TeacherShell>
   );

@@ -1,7 +1,15 @@
 "use server";
 
+import { after } from "next/server";
 import { requireRole } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { classifyCase } from "@/lib/ai/classify";
+import { maskChildName } from "@/lib/ai/reply-draft";
+
+// "11월 20일" (한국 시간)
+function formatMonthDay(iso: string) {
+  return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "long", day: "numeric" }).format(new Date(iso));
+}
 import { buildCounselorPrompt } from "@/lib/ai/counselor-prompt";
 import { generateCounselorReply, geminiFailMessage, type ChatTurn } from "@/lib/ai/gemini";
 import { summarizeConversation } from "@/lib/ai/summarize";
@@ -9,7 +17,7 @@ import { needsEmergencyNotice, EMERGENCY_NOTICE } from "@/lib/ai/safety";
 import { isOpen, parseSummary, splitSummaryMarker, withSummaryFlag } from "@/lib/summary";
 
 // 모든 함수는 "로그인한 학부모 권한(RLS)"으로 동작한다.
-// 관리자 키는 AI 답변(role = 'assistant') 저장 한 곳에서만 쓴다.
+// 관리자 키는 AI 답변(role = 'assistant') 저장과, 전달 직후 분류(classifyCase)에서만 쓴다.
 
 // suggestSummary: AI 가 "정리 단계" 표시를 붙인 답변인지 (화면이 정리 제안을 띄우는 기준)
 export type ChatMessage = { id: string; role: "parent" | "assistant"; content: string; suggestSummary?: boolean };
@@ -164,19 +172,44 @@ async function promptFor(
   emergencyNoticeShown: boolean,
   earlierRisk: boolean,
 ) {
-  const [{ data: school }, { data: student }] = await Promise.all([
+  const [{ data: school }, { data: student }, { data: prevCases }] = await Promise.all([
     supabase.from("schools").select("name").maybeSingle(),
     studentId
-      ? supabase.from("students").select("classes(grade, class_no)").eq("id", studentId).maybeSingle()
+      ? supabase.from("students").select("name, classes(grade, class_no)").eq("id", studentId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    // 같은 자녀 일로 예전에 학교에 전달한 문의와 학교 답변 (학부모 본인 RLS, 최근 5건) — 반복 문의 확인용 (기획안 9장)
+    studentId
+      ? supabase
+          .from("cases")
+          .select("created_at, final_summary, case_replies(body, created_at)")
+          .eq("student_id", studentId)
+          .order("created_at", { ascending: false })
+          .limit(5)
       : Promise.resolve({ data: null }),
   ]);
-  const cls = (student as { classes: { grade: number; class_no: number } | null } | null)?.classes;
+  const st = student as { name: string; classes: { grade: number; class_no: number } | null } | null;
+  const cls = st?.classes;
+  const previousCases = ((prevCases ?? []) as { created_at: string; final_summary: unknown; case_replies: { body: string; created_at: string }[] | null }[])
+    .map((c) => {
+      const topic = parseSummary(c.final_summary)?.topic;
+      const reply = [...(c.case_replies ?? [])].sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)?.body;
+      return topic
+        ? {
+            date: formatMonthDay(c.created_at),
+            topic,
+            // 답변은 앞부분만, 아이 이름은 가린다
+            reply: reply ? maskChildName(reply.replace(/\s+/g, " ").slice(0, 400), st?.name) : null,
+          }
+        : null;
+    })
+    .filter((x): x is { date: string; topic: string; reply: string | null } => !!x);
   // 아이 이름은 AI 에 보내지 않는다 (학부모가 직접 말한 경우에만 대화에 들어간다).
   return buildCounselorPrompt({
     schoolName: school?.name ?? "학교",
     childLabel: cls ? `${cls.grade}학년 ${cls.class_no}반 학생` : null,
     emergencyNoticeShown,
     earlierRisk,
+    previousCases,
   });
 }
 
@@ -236,10 +269,17 @@ export async function sendToSchool(conversationId: string, input: unknown): Prom
   const summary = parseSummary(input);
   if (!summary) return { ok: false, error: "상담 주제는 비워 둘 수 없어요." };
 
-  const { error } = await supabase.rpc("consent_and_create_case", {
+  const { data: caseId, error } = await supabase.rpc("consent_and_create_case", {
     p_conversation_id: conversationId,
     p_final_summary: summary,
   });
+  if (!error && typeof caseId === "string") {
+    // 전달된 요약의 위험도·반복 여부를 분류한다 (교직원 참고용, 학부모에게는 보이지 않음).
+    // 학부모 화면을 기다리게 하지 않도록 응답을 보낸 뒤에 한다. 실패하면 교사가 열 때 다시 분류한다.
+    after(() =>
+      classifyCase(caseId).catch((e) => console.error("[classify after consent]", e instanceof Error ? e.message : e)),
+    );
+  }
   if (error) {
     console.error("[consent]", error.message);
     if (/담임/.test(error.message)) return { ok: false, error: "담임 선생님이 등록되어 있지 않아 전달할 수 없어요." };

@@ -34,7 +34,14 @@ export const SHARE_TARGETS: Record<ShareTarget, { label: string; who: string }> 
 };
 
 // 공유할 때 남긴 메모 (교직원만 봄)
-export type ShareNote = { authorName: string; target: ShareTarget; note: string; createdAt: string };
+// 메모 받는 사람: 공유 대상(학년부장·교장교감) + 담임 (교장·교감이 담임에게 남기는 메모, 0007)
+export type NoteTarget = ShareTarget | "TEACHER";
+export const NOTE_TO: Record<NoteTarget, string> = {
+  TEACHER: "담임 선생님",
+  MANAGER: "학년부장 선생님",
+  ADMIN: "교장·교감 선생님",
+};
+export type ShareNote = { authorName: string; target: NoteTarget; note: string; createdAt: string };
 
 // 보는 사람이 아직 공유할 수 있는 대상 (DB 함수 escalate_case 와 같은 기준)
 //   담임: 답변 전이면 학년부장·교장교감 각각 한 번 / 학년부장: 교장·교감에게만 / 교장·교감: 없음
@@ -78,4 +85,12 @@ export function formatCaseTime(iso: string) {
       .map((p) => [p.type, p.value]),
   );
   return `${parts.month}.${parts.day} (${parts.weekday}) ${parts.hour}:${parts.minute}`;
+}
+
+// 답변을 보낸 지 2일이 지난 문의는 "지난 문의함"으로 옮긴다 (사용자 요청 2026-11-24)
+export const ARCHIVE_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
+
+export function splitArchived<T extends { reply: { createdAt: string } | null }>(cases: T[], now: number) {
+  const isArchived = (c: T) => !!c.reply && now - Date.parse(c.reply.createdAt) >= ARCHIVE_AFTER_MS;
+  return { active: cases.filter((c) => !isArchived(c)), archived: cases.filter(isArchived) };
 }

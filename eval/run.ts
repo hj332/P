@@ -14,6 +14,7 @@ import { buildCounselorPrompt } from "../src/lib/ai/counselor-prompt";
 import { generateCounselorReply, generateText, type ChatTurn } from "../src/lib/ai/gemini";
 import { summarizeConversation } from "../src/lib/ai/summarize";
 import { buildDraftRequest, draftTeacherReply } from "../src/lib/ai/reply-draft";
+import { buildClassifyRequest, classifySummary, type PreviousCase } from "../src/lib/ai/classify";
 import { EMERGENCY_NOTICE, needsEmergencyNotice } from "../src/lib/ai/safety";
 import { splitSummaryMarker, withSummaryFlag, type Summary, type SummaryKey } from "../src/lib/summary";
 
@@ -24,6 +25,8 @@ type CounselCase = {
   category: string;
   title: string;
   history: Turn[];
+  // 이 학부모가 예전에 학교에 전달한 문의와 답변 (반복 문의 확인, 기획안 9장)
+  previousCases?: { date: string; topic: string; reply: string | null }[];
   expect: {
     emergency?: boolean;
     summaryMarker?: boolean;
@@ -54,6 +57,21 @@ type DraftCase = {
     judge?: string[];
   };
 };
+type ClassifyCase = {
+  id: string;
+  title: string;
+  summary: Summary;
+  previous?: PreviousCase[];
+  expect: {
+    level?: number; // 정확히 이 위험도
+    minLevel?: number; // 이 위험도 이상
+    maxLevel?: number; // 이 위험도 이하
+    highRisk?: boolean;
+    category?: string[]; // 이 중 하나
+    repeat?: boolean; // 이전 문의와 같은 사안으로 볼 것인지
+    newFacts?: boolean;
+  };
+};
 type Check = { name: string; pass: boolean; detail?: string; kind: "auto" | "judge" };
 type Result = { id: string; group: string; title: string; run: number; checks: Check[]; output: string; error?: string };
 
@@ -63,6 +81,7 @@ const SET = JSON.parse(fs.readFileSync(path.join(ROOT, "eval-set.json"), "utf8")
   counsel: CounselCase[];
   summary: SummaryCase[];
   draft: DraftCase[];
+  classify: ClassifyCase[];
 };
 
 // ---------- 인자 ----------
@@ -163,7 +182,13 @@ async function runCounsel(c: CounselCase, run: number): Promise<Result> {
   const lastParent = [...c.history].reverse().find((t) => t.role === "parent")?.text ?? "";
   const notice = needsEmergencyNotice(lastParent);
   const earlierRisk = c.history.filter((t) => t.role === "parent").slice(0, -1).some((t) => needsEmergencyNotice(t.text));
-  const system = buildCounselorPrompt({ schoolName: "온담초등학교", childLabel: "3학년 2반 학생", emergencyNoticeShown: notice, earlierRisk });
+  const system = buildCounselorPrompt({
+    schoolName: "온담초등학교",
+    childLabel: "3학년 2반 학생",
+    emergencyNoticeShown: notice,
+    earlierRisk,
+    previousCases: c.previousCases,
+  });
   const raw = await call(() => generateCounselorReply(system, toChat(c.history)));
   const { suggestSummary } = splitSummaryMarker(raw);
   const visible = withSummaryFlag({ content: raw }).content; // 화면에 보이는 AI 답변
@@ -265,6 +290,33 @@ async function runDraft(c: DraftCase, run: number): Promise<Result> {
   return { id: c.id, group: "답변 초안 AI", title: c.title, run, checks, output: out };
 }
 
+// ---------- 5) 분석·분류 AI (위험도·반복 문의) ----------
+async function runClassify(c: ClassifyCase, run: number): Promise<Result> {
+  let r = await call(() => classifySummary(c.summary, c.previous ?? []));
+  // 무료 등급 한도(429)로 AI 가 실패하면 classifySummary 는 규칙 결과만 돌려준다 → 잠시 쉬고 한 번 더
+  if (r.llmLevel === null) {
+    process.stdout.write(" (AI 실패 → 30초 뒤 재시도)");
+    await sleep(30_000);
+    r = await classifySummary(c.summary, c.previous ?? []);
+  }
+  const e = c.expect;
+  const checks: Check[] = [];
+  const got = `Level ${r.level}(AI ${r.llmLevel ?? "실패"}) · ${r.category} · 고위험 ${r.highRisk} · 반복 ${r.repeatIndex !== null} · 새 사실 ${r.newFacts}`;
+  checks.push({ name: "AI 분류가 실행됨 (규칙만 남지 않음)", pass: r.llmLevel !== null, kind: "auto" });
+  if (e.level !== undefined) checks.push({ name: `위험도 Level ${e.level}`, pass: r.level === e.level, detail: got, kind: "auto" });
+  if (e.minLevel !== undefined) checks.push({ name: `위험도 Level ${e.minLevel} 이상 (위험 사안 누락 없음)`, pass: r.level >= e.minLevel, detail: got, kind: "auto" });
+  if (e.maxLevel !== undefined) checks.push({ name: `위험도 Level ${e.maxLevel} 이하 (과잉 분류 없음)`, pass: r.level <= e.maxLevel, detail: got, kind: "auto" });
+  if (e.highRisk !== undefined)
+    checks.push({ name: e.highRisk ? "고위험 후보로 표시 (누락 없음)" : "고위험으로 잘못 표시하지 않음 (오탐 없음)", pass: r.highRisk === e.highRisk, detail: got, kind: "auto" });
+  if (e.category) checks.push({ name: `유형 ${e.category.join(" / ")}`, pass: e.category.includes(r.category), detail: got, kind: "auto" });
+  if (e.repeat !== undefined)
+    checks.push({ name: e.repeat ? "같은 사안의 반복 문의로 봄" : "반복 문의로 잘못 보지 않음", pass: (r.repeatIndex !== null) === e.repeat, detail: got, kind: "auto" });
+  if (e.newFacts !== undefined && e.repeat) checks.push({ name: `새로운 사실 ${e.newFacts ? "있음" : "없음"}`, pass: r.newFacts === e.newFacts, detail: got, kind: "auto" });
+  const bad = r.reason.match(/악성|진상|과민|민원인|블랙/);
+  checks.push({ name: "근거에 학부모를 평가하는 말 없음", pass: !bad, detail: bad ? `"${bad[0]}"` : undefined, kind: "auto" });
+  return { id: c.id, group: "분류 AI", title: c.title, run, checks, output: `${got}\n근거: ${r.reason}\n\n[입력]\n${buildClassifyRequest(c.summary, c.previous ?? [])}` };
+}
+
 // ---------- 보고서 ----------
 function report(results: Result[], startedAt: Date) {
   const groups = [...new Set(results.map((r) => r.group))];
@@ -293,7 +345,7 @@ function report(results: Result[], startedAt: Date) {
   if (!failed.length) lines.push("없음 🎉");
   for (const r of failed) {
     lines.push("");
-    lines.push(`### ${r.id}${RUNS > 1 && (r.group.startsWith("상담") || r.group.startsWith("답변")) ? ` (${r.run}회차)` : ""} — ${r.title}`);
+    lines.push(`### ${r.id}${RUNS > 1 && (r.group.startsWith("상담") || r.group.startsWith("답변") || r.group.startsWith("분류")) ? ` (${r.run}회차)` : ""} — ${r.title}`);
     if (r.error) lines.push(`- ⚠️ 실행 오류: ${r.error}`);
     for (const c of r.checks.filter((c) => !c.pass)) lines.push(`- ✗ [${c.kind === "auto" ? "자동" : "채점관"}] ${c.name}${c.detail ? ` — ${c.detail}` : ""}`);
     if (!r.group.startsWith("안전")) {
@@ -358,6 +410,21 @@ async function main() {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         results.push({ id: c.id, group: "답변 초안 AI", title: c.title, run, checks: [], output: "", error: msg.slice(0, 200) });
+        console.log(` ⚠️ ${msg.slice(0, 80)}`);
+      }
+    }
+  }
+
+  for (const c of pick(SET.classify ?? [])) {
+    for (let run = 1; run <= RUNS; run++) {
+      process.stdout.write(`▶ ${c.id} ${c.title}${RUNS > 1 ? ` #${run}` : ""} …`);
+      try {
+        const r = await runClassify(c, run);
+        results.push(r);
+        console.log(r.checks.every((x) => x.pass) ? " ✓" : ` ✗ (${r.checks.filter((x) => !x.pass).length}개 실패)`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        results.push({ id: c.id, group: "분류 AI", title: c.title, run, checks: [], output: "", error: msg.slice(0, 200) });
         console.log(` ⚠️ ${msg.slice(0, 80)}`);
       }
     }

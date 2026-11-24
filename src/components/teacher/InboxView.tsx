@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Icon, type IconName } from "@/components/brand/icons";
 import type { InboxCase } from "@/app/teacher/data";
-import { escalateCase, generateReplyDraft, sendReply } from "@/app/teacher/actions";
+import { addCaseNote, escalateCase, generateReplyDraft, sendReply } from "@/app/teacher/actions";
 import {
   BLANK_PATTERN,
   REPLY_MAX,
@@ -13,8 +13,10 @@ import {
   caseStatusOf,
   formatCaseTime,
   shareableTargets,
+  NOTE_TO,
   type ShareTarget,
 } from "@/lib/cases";
+import { LEVEL_LABEL, levelChip, repeatEscalated, signalLabels, type Risk } from "@/lib/risk";
 
 type Mode = "teacher" | "admin";
 type Filter = "all" | "new" | "waiting" | "done";
@@ -48,11 +50,17 @@ export function InboxView({
   cases,
   mode = "teacher",
   viewerRole = "TEACHER",
+  empty,
+  others = [],
 }: {
   cases: InboxCase[];
   mode?: Mode;
   // 보는 사람의 역할 (학년부장이면 교장·교감에게 공유 버튼이 생긴다)
   viewerRole?: string;
+  // 목록이 비었을 때 문구 (지난 문의함 등)
+  empty?: { title: string; body: string };
+  // 이 목록에는 없지만 반복 문의의 "이전 문의" 제목을 찾을 때 쓸 다른 목록 (업무함 ↔ 지난 문의함)
+  others?: InboxCase[];
 }) {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>("all");
@@ -82,8 +90,10 @@ export function InboxView({
     // 미확인 → 확인 중 (교사), 확인 전 → 확인 중 (공유받은 사람) 으로 바뀌는 경우에만 다시 불러온다
     const willChange = mode === "teacher" ? selected.status === "NEW" : !selected.myViewedAt;
     fetch(`/${mode}/cases/${selected.id}/open`, { method: "POST" })
-      .then((r) => {
-        if (r.ok && willChange) router.refresh();
+      .then(async (r) => {
+        // classified: 아직 분류 안 된 문의를 서버가 방금 AI 로 분류함 → 결과를 보여 주려고 다시 불러온다
+        const body = (await r.json().catch(() => ({}))) as { classified?: boolean };
+        if (r.ok && (willChange || body.classified)) router.refresh();
       })
       .catch(() => logged.current.delete(selected.id)); // 네트워크 실패면 다음에 다시 시도
   }, [selected, router, mode]);
@@ -103,12 +113,13 @@ export function InboxView({
           <Icon name="fileText" size={30} />
         </span>
         <h2 className="m-0 text-xl font-black text-heading">
-          {mode === "admin" ? "공유받은 문의가 없어요" : "아직 전달된 문의가 없어요"}
+          {empty?.title ?? (mode === "admin" ? "공유받은 문의가 없어요" : "아직 전달된 문의가 없어요")}
         </h2>
         <p className="m-0 text-[15px] text-body">
-          {mode === "admin"
-            ? "담임 선생님이 [관리자와 공유]를 누른 문의만 이곳에 나타나요."
-            : "학부모님이 요약을 확인하고 전달에 동의하면 이곳에 나타나요."}
+          {empty?.body ??
+            (mode === "admin"
+              ? "담임 선생님이 [관리자와 공유]를 누른 문의만 이곳에 나타나요."
+              : "학부모님이 요약을 확인하고 전달에 동의하면 이곳에 나타나요.")}
         </p>
       </div>
     );
@@ -175,6 +186,7 @@ export function InboxView({
                 <span className="text-xs text-muted">{formatCaseTime(mode === "admin" && c.escalatedAt ? c.escalatedAt : c.createdAt)}</span>
               </span>
               <strong className="text-[17px] font-bold">{c.summary?.topic ?? "상담 요청"}</strong>
+              {c.risk && <RiskChips r={c.risk} />}
               <span className="flex items-center justify-between text-[13px] text-[#4D6157]">
                 <span>
                   {c.classLabel ? `${c.classLabel} ` : ""}
@@ -201,7 +213,7 @@ export function InboxView({
       <div ref={detailRef} className="flex min-w-0 flex-[999_1_480px] scroll-mt-4">
         {selected ? (
           // key: 다른 문의를 열면 작성 중이던 답변 상태를 새로 시작한다
-          <CaseDetail key={selected.id} c={selected} mode={mode} viewerRole={viewerRole} />
+          <CaseDetail key={selected.id} c={selected} cases={[...cases, ...others]} mode={mode} viewerRole={viewerRole} />
         ) : (
           <div className="flex w-full flex-col items-center gap-3 rounded-3xl border border-dashed border-[#CFE3C4] bg-white px-6 py-14 text-center">
             <span className="flex size-14 items-center justify-center rounded-full bg-parent-bubble text-deep-green">
@@ -218,7 +230,7 @@ export function InboxView({
   );
 }
 
-function CaseDetail({ c, mode, viewerRole }: { c: InboxCase; mode: Mode; viewerRole: string }) {
+function CaseDetail({ c, cases, mode, viewerRole }: { c: InboxCase; cases: InboxCase[]; mode: Mode; viewerRole: string }) {
   const s = c.summary;
   const targets = shareableTargets(c, mode === "teacher" ? "TEACHER" : viewerRole);
   return (
@@ -266,6 +278,8 @@ function CaseDetail({ c, mode, viewerRole }: { c: InboxCase; mode: Mode; viewerR
         <p className="m-0 px-[30px] py-6 text-body">요약을 불러오지 못했어요.</p>
       )}
 
+      <RiskBox c={c} cases={cases} />
+
       {c.notes.length > 0 && <ShareNotes c={c} />}
 
       {c.reply ? (
@@ -280,6 +294,7 @@ function CaseDetail({ c, mode, viewerRole }: { c: InboxCase; mode: Mode; viewerR
       ) : null}
 
       {targets.length > 0 && <SharePanel c={c} targets={targets} asManager={mode === "admin"} />}
+      {mode === "admin" && viewerRole === "ADMIN" && <NotePanel c={c} />}
 
       <div className="flex items-center gap-2 border-t border-[#EEF4EA] bg-[#FAFCF8] px-5 py-3.5 text-xs text-muted sm:px-[30px]">
         <Icon name="lock" size={14} />
@@ -319,10 +334,25 @@ function ReplyComposer({ c }: { c: InboxCase }) {
   const [blankWarned, setBlankWarned] = useState(false);
   const [drafting, startDraft] = useTransition();
   const [sending, startSend] = useTransition();
+  // 브라우저 확인 창(window.confirm)은 앱 안 브라우저 등에서 막히거나 바로 닫힐 수 있어 화면 안에서 묻는다
+  const [asking, setAsking] = useState<"draft" | "clear" | null>(null);
   const busy = drafting || sending;
 
-  function getDraft() {
-    if (body.trim() && !window.confirm("작성 중인 내용을 AI 답변 초안으로 바꿀까요?")) return;
+  function clearComposer() {
+    setOpen(false);
+    setBody("");
+    setFromDraft(false);
+    setBlankWarned(false);
+    setError(null);
+    setAsking(null);
+  }
+
+  function getDraft(force = false) {
+    if (body.trim() && !force) {
+      setAsking("draft");
+      return;
+    }
+    setAsking(null);
     setError(null);
     setOpen(true);
     startDraft(async () => {
@@ -431,7 +461,7 @@ function ReplyComposer({ c }: { c: InboxCase }) {
         )}
         <button
           type="button"
-          onClick={getDraft}
+          onClick={() => getDraft()}
           disabled={busy}
           className="inline-flex min-h-[50px] items-center gap-2 rounded-xl border-[1.5px] border-[#9CCB84] bg-white px-[22px] text-base font-bold text-ok-fg disabled:opacity-50"
         >
@@ -441,21 +471,106 @@ function ReplyComposer({ c }: { c: InboxCase }) {
         {open && !busy && (
           <button
             type="button"
-            onClick={() => {
-              if (body.trim() && !window.confirm("작성 중인 답변을 지울까요?")) return;
-              setOpen(false);
-              setBody("");
-              setFromDraft(false);
-              setBlankWarned(false);
-              setError(null);
-            }}
+            onClick={() => (body.trim() ? setAsking("clear") : clearComposer())}
             className="inline-flex min-h-[50px] items-center px-3 text-[15px] text-muted underline underline-offset-4"
           >
             취소
           </button>
         )}
       </div>
+      {asking === "draft" && (
+        <InlineConfirm
+          message="작성 중인 내용을 AI 답변 초안으로 바꿀까요? 지금 쓴 내용은 지워져요."
+          confirmLabel="초안으로 바꾸기"
+          onConfirm={() => getDraft(true)}
+          onCancel={() => setAsking(null)}
+        />
+      )}
+      {asking === "clear" && (
+        <InlineConfirm
+          message="작성 중인 답변을 지울까요?"
+          confirmLabel="지우기"
+          onConfirm={clearComposer}
+          onCancel={() => setAsking(null)}
+        />
+      )}
       {open && <p className="m-0 text-[13px] text-muted">보낸 답변은 학부모님 화면에 바로 표시되고, 보낸 뒤에는 고칠 수 없어요.</p>}
+    </section>
+  );
+}
+
+// 목록 카드의 작은 표시: 위험도 · 고위험 후보 · 반복 문의
+function RiskChips({ r }: { r: Risk }) {
+  const lv = levelChip(r);
+  return (
+    <span className="flex flex-wrap gap-1.5">
+      <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-bold ${lv.tone}`}>
+        <Icon name="info" size={12} />
+        {lv.text}
+      </span>
+      {r.highRisk && (
+        <span className="inline-flex items-center gap-1 rounded-md bg-danger-bg px-2 py-0.5 text-xs font-bold text-danger-fg">
+          <Icon name="shieldCheck" size={12} />
+          고위험 후보
+        </span>
+      )}
+      {r.repeatOf && (
+        <span className="inline-flex items-center gap-1 rounded-md bg-warn-bg px-2 py-0.5 text-xs font-bold text-warn-fg">
+          <Icon name="clock" size={12} />
+          반복 문의{r.repeatHasReply ? " · 이전 답변 있음" : ""}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// 상세의 AI 분류 상자 (참고용). 학부모에게는 보이지 않고, 알림·자동 배정은 하지 않는다.
+function RiskBox({ c, cases }: { c: InboxCase; cases: InboxCase[] }) {
+  const r = c.risk;
+  if (!r) {
+    return (
+      <p className="m-0 mx-5 mt-5 flex items-center gap-2 text-[13px] text-muted sm:mx-[30px]">
+        <Icon name="clock" size={14} />
+        AI 분류(위험도·반복 문의)를 준비하고 있어요. 잠시 후 다시 열어 보세요.
+      </p>
+    );
+  }
+  const prev = r.repeatOf ? cases.find((x) => x.id === r.repeatOf) : null;
+  const signals = signalLabels(r);
+  return (
+    <section
+      aria-label="AI 분류 (참고용)"
+      className={
+        "mx-5 mt-5 flex flex-col gap-2 rounded-2xl px-5 py-4 sm:mx-[30px] " +
+        (r.highRisk ? "border border-[#F3C9C5] bg-danger-bg" : "border border-line bg-[#FAFCF8]")
+      }
+    >
+      <span className="flex flex-wrap items-center justify-between gap-2">
+        <strong className={"flex items-center gap-2 text-sm " + (r.highRisk ? "text-danger-fg" : "text-body")}>
+          <Icon name={r.highRisk ? "shieldCheck" : "info"} size={16} />
+          AI 분류 · 참고용 — Level {r.level} · {LEVEL_LABEL[r.level]}
+          {r.highRisk && " · 안전 관련 고위험 후보"}
+          {!r.highRisk && repeatEscalated(r) && " · 반복 문의"}
+        </strong>
+        <span className="text-xs text-muted">학부모님께는 보이지 않아요 · 알림·자동 배정 없음</span>
+      </span>
+      {r.reason && <p className="m-0 text-[15px] leading-[1.7]">{r.reason}</p>}
+      {signals.length > 0 && (
+        <p className="m-0 text-[13px] text-body">
+          감지된 표현: {signals.join(", ")} <span className="text-muted">(표현만으로 확정하지 않아요)</span>
+        </p>
+      )}
+      {!r.aiDone && <p className="m-0 text-[13px] text-muted">AI 분류는 아직이에요. 표현 감지 결과만 있어요.</p>}
+      {r.repeatOf && (
+        <p className="m-0 rounded-xl bg-warn-bg px-3.5 py-2.5 text-[13px] leading-[1.6] text-warn-fg">
+          <strong>같은 사안의 이전 문의가 있어요</strong>
+          {prev ? ` — “${prev.summary?.topic ?? "이전 문의"}” (${formatCaseTime(prev.createdAt)})` : ""}
+          {r.repeatHasReply ? " · 이전에 학교 답변을 보냈어요" : " · 이전 문의에는 아직 답변하지 않았어요"}
+          {r.repeatNewFacts === true && " · 이번에는 새로운 내용이 있어요"}
+          {r.repeatNewFacts === false && " · 새로운 내용은 없어 보여요"}
+          {repeatEscalated(r) && " → 이전 답변 뒤 같은 요구라 Level 3(관리자 검토 필요)으로 표시했어요"}
+        </p>
+      )}
     </section>
   );
 }
@@ -471,7 +586,7 @@ function ShareNotes({ c }: { c: InboxCase }) {
       {c.notes.map((n, i) => (
         <div key={i} className="flex flex-col gap-1 rounded-xl bg-white px-4 py-3">
           <span className="text-xs text-muted">
-            {n.authorName} → {SHARE_TARGETS[n.target].who} · {formatCaseTime(n.createdAt)}
+            {n.authorName} → {NOTE_TO[n.target] ?? "선생님"} · {formatCaseTime(n.createdAt)}
           </span>
           <p className="m-0 text-[15px] leading-[1.7] whitespace-pre-wrap">{n.note}</p>
         </div>
@@ -488,16 +603,13 @@ function SharePanel({ c, targets, asManager }: { c: InboxCase; targets: ShareTar
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sharing, start] = useTransition();
+  // [공유하기] → 화면 안에서 한 번 더 확인 (브라우저 확인 창은 앱 안 브라우저에서 막힐 수 있음)
+  const [confirming, setConfirming] = useState(false);
   const chosen = targets.includes(target) ? target : targets[0];
+  const who = SHARE_TARGETS[chosen].who;
 
   function share() {
-    const who = SHARE_TARGETS[chosen].who;
-    if (
-      !window.confirm(
-        `이 문의를 ${who}과 공유할까요?\n${who}도 이 요약과 답변${note.trim() ? ", 메모" : ""}를 볼 수 있게 돼요. 학부모님께 답변은 계속 담임 선생님이 보내요.`,
-      )
-    )
-      return;
+    setConfirming(false);
     setError(null);
     start(async () => {
       const res = await escalateCase(c.id, chosen, note);
@@ -573,17 +685,171 @@ function SharePanel({ c, targets, asManager }: { c: InboxCase; targets: ShareTar
               {error}
             </p>
           )}
+          {confirming ? (
+            <InlineConfirm
+              message={`이 문의를 ${who}과 공유할까요? ${who}도 이 요약과 답변${note.trim() ? ", 메모를" : "을"} 볼 수 있게 돼요. 학부모님께 답변은 계속 담임 선생님이 보내요.`}
+              confirmLabel="네, 공유할게요"
+              onConfirm={share}
+              onCancel={() => setConfirming(false)}
+            />
+          ) : (
+            <div className="flex flex-wrap gap-2.5">
+              <button
+                type="button"
+                onClick={() => setConfirming(true)}
+                disabled={sharing}
+                className="inline-flex min-h-[50px] items-center gap-2 rounded-xl bg-[#4B3A84] px-[22px] text-base font-bold text-white disabled:opacity-50"
+              >
+                <Icon name="share" size={18} />
+                {sharing ? "공유하는 중…" : "공유하기"}
+              </button>
+              {!sharing && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setError(null);
+                  }}
+                  className="inline-flex min-h-[50px] items-center px-3 text-[15px] text-muted underline underline-offset-4"
+                >
+                  취소
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// 화면 안 확인 (브라우저 확인 창 window.confirm 대신 — 앱 안 브라우저에서 막히거나 바로 닫힐 수 있음)
+function InlineConfirm({
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+}: {
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div role="alertdialog" aria-label="확인" className="flex flex-col gap-2.5 rounded-xl border border-[#E7D9A8] bg-warn-bg px-4 py-3">
+      <p className="m-0 text-sm leading-[1.6] font-medium text-warn-fg">{message}</p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="inline-flex min-h-11 items-center rounded-xl bg-deep-green px-4 text-[15px] font-bold text-white"
+        >
+          {confirmLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex min-h-11 items-center rounded-xl border border-line bg-white px-4 text-[15px] text-body"
+        >
+          취소
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// [메모 남기기] 교장·교감 → 담임 / 학년부장. 학년부장 앞 메모는 학년부장에게도 이 문의를 공유한다.
+function NotePanel({ c }: { c: InboxCase }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState<"TEACHER" | "MANAGER">("TEACHER");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, start] = useTransition();
+
+  function save() {
+    setError(null);
+    start(async () => {
+      const res = await addCaseNote(c.id, target, note);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setOpen(false);
+      setNote("");
+      router.refresh();
+    });
+  }
+
+  return (
+    <section aria-label="메모 남기기" className="flex flex-col gap-3 px-5 pb-[26px] sm:px-[30px]">
+      {!open ? (
+        <div>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="inline-flex min-h-[50px] items-center gap-2 rounded-xl border-[1.5px] border-[#CFC2EE] bg-white px-[22px] text-base font-bold text-[#4B3A84]"
+          >
+            <Icon name="pencil" size={18} />
+            메모 남기기
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 rounded-2xl border border-[#DDD3F3] bg-[#F7F4FD] px-5 py-4">
+          <fieldset className="m-0 flex flex-col gap-2 border-0 p-0">
+            <legend className="mb-2 text-[15px] font-bold text-[#4B3A84]">누구에게 남길까요?</legend>
+            <div className="flex flex-wrap gap-2">
+              {(["TEACHER", "MANAGER"] as const).map((t) => (
+                <label
+                  key={t}
+                  className={
+                    "inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl bg-white px-4 text-[15px] font-bold ring-1 " +
+                    (target === t ? "text-[#4B3A84] ring-2 ring-[#8D78D6]" : "text-body ring-[#CFC2EE]")
+                  }
+                >
+                  <input
+                    type="radio"
+                    name={`note-${c.id}`}
+                    checked={target === t}
+                    onChange={() => setTarget(t)}
+                    className="accent-[#4B3A84]"
+                  />
+                  {NOTE_TO[t]}께
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <label className="flex flex-col gap-1.5 text-sm font-bold text-body">
+            메모
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={1000}
+              rows={3}
+              placeholder="예) 학부모님과 통화하기 전에 지도 기록을 함께 확인해 주세요."
+              className="w-full resize-y rounded-xl border-[1.5px] border-[#D9CFF2] bg-white px-4 py-3 text-[15px] leading-[1.7] font-normal text-ink outline-[#8D78D6]"
+            />
+          </label>
+          <p className="m-0 text-[13px] leading-[1.6] text-muted">
+            메모는 이 문의를 보는 선생님들만 볼 수 있고, 학부모님께는 보이지 않아요.
+            {target === "MANAGER" && !c.sharedManagerAt && " 아직 학년부장 선생님과 공유되지 않은 문의라, 메모와 함께 학년부장 선생님께도 공유돼요."}
+          </p>
+          {error && (
+            <p role="alert" className="m-0 rounded-xl bg-danger-bg px-4 py-3 text-sm font-medium text-danger-fg">
+              {error}
+            </p>
+          )}
           <div className="flex flex-wrap gap-2.5">
             <button
               type="button"
-              onClick={share}
-              disabled={sharing}
+              onClick={save}
+              disabled={saving || !note.trim()}
               className="inline-flex min-h-[50px] items-center gap-2 rounded-xl bg-[#4B3A84] px-[22px] text-base font-bold text-white disabled:opacity-50"
             >
-              <Icon name="share" size={18} />
-              {sharing ? "공유하는 중…" : "공유하기"}
+              <Icon name="send" size={18} />
+              {saving ? "남기는 중…" : "메모 남기기"}
             </button>
-            {!sharing && (
+            {!saving && (
               <button
                 type="button"
                 onClick={() => {

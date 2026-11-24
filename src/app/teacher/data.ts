@@ -1,7 +1,9 @@
 import "server-only";
 import { requireRole } from "@/lib/auth";
-import type { CaseReply, ShareNote, ShareTarget } from "@/lib/cases";
+import { splitArchived, type CaseReply, type NoteTarget, type ShareNote } from "@/lib/cases";
 import { parseSummary, type Summary } from "@/lib/summary";
+import { parseRisk, type Risk } from "@/lib/risk";
+import type { SchoolStatsData } from "@/components/admin/SchoolStats";
 
 // 교사 업무함·관리자 목록 데이터. 로그인한 사람의 권한(RLS)으로 읽으므로
 //  - 교사: "학부모가 전달에 동의했고, 나에게 배정됐고, 내 학급 학생인" Case 만
@@ -22,6 +24,7 @@ export type InboxCase = {
   summary: Summary | null;
   reply: CaseReply | null;
   notes: ShareNote[]; // 공유 메모 (case_share_notes RLS: 교직원만)
+  risk: Risk | null; // AI 분류 (risk_assessments RLS: 교직원만). null = 아직 분류 전
 };
 
 type Supa = Awaited<ReturnType<typeof requireRole>>["supabase"];
@@ -30,7 +33,7 @@ export async function loadCases(supabase: Supa, opts: { orderBy?: "created_at" |
   const { data, error } = await supabase
     .from("cases")
     .select(
-      "id, status, created_at, escalated_at, shared_manager_at, shared_admin_at, final_summary, students(name, classes(grade, class_no)), case_replies(body, author_name, created_at), assignments(viewed_at), case_share_notes(author_name, target, note, created_at)",
+      "id, status, created_at, escalated_at, shared_manager_at, shared_admin_at, final_summary, students(name, classes(grade, class_no)), case_replies(body, author_name, created_at), assignments(viewed_at), case_share_notes(author_name, target, note, created_at), risk_assessments!risk_assessments_case_id_fkey(level, llm_level, category, high_risk, rule_signals, reason, repeat_of, repeat_has_reply, repeat_new_facts)",
     )
     .order(opts.orderBy ?? "created_at", { ascending: false });
   if (error) console.error("[cases]", error.message);
@@ -41,7 +44,7 @@ export async function loadCases(supabase: Supa, opts: { orderBy?: "created_at" |
     const mine = (c.assignments ?? []) as { viewed_at: string | null }[];
     const notes = ((c.case_share_notes ?? []) as { author_name: string; target: string; note: string; created_at: string }[])
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
-      .map((n) => ({ authorName: n.author_name, target: n.target as ShareTarget, note: n.note, createdAt: n.created_at }));
+      .map((n) => ({ authorName: n.author_name, target: n.target as NoteTarget, note: n.note, createdAt: n.created_at }));
     const last = replies.sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1);
     return {
       id: c.id,
@@ -56,16 +59,26 @@ export async function loadCases(supabase: Supa, opts: { orderBy?: "created_at" |
       summary: parseSummary(c.final_summary),
       reply: last ? { body: last.body, authorName: last.author_name, createdAt: last.created_at } : null,
       notes,
+      risk: parseRisk(c.risk_assessments),
     };
   });
 }
 
 export async function getTeacherInbox() {
   const { supabase, profile } = await requireRole(["TEACHER", "MANAGER"]);
-  return { profile, cases: await loadCases(supabase) };
+  // requireRole() 이 connection() 으로 요청 시점 렌더링을 보장하므로 현재 시각을 써도 된다
+  const { active, archived } = splitArchived(await loadCases(supabase), Date.now());
+  return { profile, cases: active, archived };
 }
 
 export async function getAdminCases() {
   const { supabase, profile } = await requireRole(["ADMIN", "MANAGER"]);
-  return { profile, cases: await loadCases(supabase, { orderBy: "escalated_at" }) };
+  // 학교 익명 통계는 교장·교감만 (DB 함수가 다시 확인한다)
+  const [cases, stats] = await Promise.all([
+    loadCases(supabase, { orderBy: "escalated_at" }),
+    profile.role === "ADMIN" ? supabase.rpc("school_stats") : Promise.resolve({ data: null, error: null }),
+  ]);
+  if (stats.error) console.error("[school_stats]", stats.error.message);
+  const { active, archived } = splitArchived(cases, Date.now());
+  return { profile, cases: active, archived, stats: (stats.data as SchoolStatsData | null) ?? null };
 }

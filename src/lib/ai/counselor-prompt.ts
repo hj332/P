@@ -12,6 +12,8 @@ export function buildCounselorPrompt(ctx: {
   emergencyNoticeShown?: boolean;
   // 이번 메시지가 아니라 앞선 대화에서 위험 표현이 있었는지 (시스템이 판단해서 알려 준다)
   earlierRisk?: boolean;
+  // 이 학부모가 같은 자녀 일로 예전에 학교에 전달한 문의와 학교 답변 (학부모 본인의 기록, 기획안 9장)
+  previousCases?: { date: string; topic: string; reply: string | null }[];
 }) {
   const noticeNote = ctx.emergencyNoticeShown
     ? `\n\n## 이번 답변에 대해
@@ -22,7 +24,26 @@ export function buildCounselorPrompt(ctx: {
 이 대화 앞부분에서 위험 표현(자해·자살·위해)이 있었다. 지금 다른 이야기를 하더라도, 답변 안에 아이의 마음을 계속 살펴 달라는 말과
 "걱정되시면 자살예방상담전화 109(24시간)에 함께 상담받아 보실 수 있어요" 같은 안내를 짧게 한 번 넣는다.`
       : "";
-  return base(ctx) + noticeNote;
+  return base(ctx) + previousNote(ctx.previousCases ?? []) + noticeNote;
+}
+
+// 반복 문의 처리 (기획안 9장): 같은 사안이면 이전 학교 답변을 먼저 확인시켜 드린다. 막거나 말리지 않는다.
+function previousNote(prev: { date: string; topic: string; reply: string | null }[]) {
+  if (!prev.length) return "";
+  const list = prev
+    .map((p, i) => `#${i + 1} (${p.date}) 주제: ${p.topic}\n   학교 답변: ${p.reply ? `"${p.reply}"` : "아직 없음 (선생님 확인 중)"}`)
+    .join("\n");
+  return `
+
+## 이 학부모님이 예전에 학교에 전달한 문의 (학부모님 본인의 기록)
+${list}
+
+- 지금 이야기가 위 문의 중 하나와 **같은 일**이면, 첫 답변에서 공감한 뒤 짧게 확인해 드린다.
+  학교 답변이 있으면: "지난 ○월 ○일에 같은 일로 문의하셨고, 학교에서 ~라고 답변드린 기록이 있어요. 그 답변에서 해결되지 않은 부분이나 그 뒤로 새로 생긴 일이 있으신가요?"
+  답변이 아직 없으면: "같은 일로 이미 학교에 전달하신 문의가 있고, 아직 선생님이 확인하고 계세요."
+- 학교 답변은 위에 적힌 내용 안에서만 짧게 말한다. 바꾸거나 덧붙이지 않는다.
+- 다시 이야기하거나 다시 전달하는 것을 막거나 말리지 않는다. "반복", "또", "악성" 같은 말로 학부모님을 평가하지 않는다.
+- 같은 일이 아니면(다른 날의 다른 일, 다른 요청) 이 목록을 언급하지 않는다.`;
 }
 
 function base(ctx: { schoolName: string; childLabel: string | null }) {

@@ -3,7 +3,8 @@
 --
 -- 사용법: Supabase 대시보드 → SQL Editor 에 이 파일 전체를 붙여넣고 [Run].
 --   - 0001_init.sql, 0002_parent_messages_only.sql, 0003_replies_escalation.sql, 0004_manager_escalation.sql,
---     0005_manager_forward_notes.sql, seed_test.sql, seed_admin.sql 을 먼저 실행해 둘 것.
+--     0005_manager_forward_notes.sql, 0006_risk_repeat_stats.sql, 0007_levels_admin_notes_grade_stats.sql,
+--     seed_test.sql, seed_admin.sql 을 먼저 실행해 둘 것.
 --   - 테스트 계정(parent1/2, teacher1/2, admin1 교장·교감, admin2 3학년 부장)으로 "로그인한 것처럼" 바꿔 가며 확인한다.
 --     비밀번호는 필요 없다.
 --   - 테스트 중에 만든 상담·메시지·Case 는 마지막에 전부 되돌린다. 실제 데이터는 바뀌지 않는다.
@@ -53,6 +54,12 @@ begin
   end if;
   if to_regclass('public.case_replies') is null then
     raise exception '0003_replies_escalation.sql 이 아직 실행되지 않았습니다.';
+  end if;
+  if to_regprocedure('public.add_case_note(uuid,text,text)') is null then
+    raise exception '0007_levels_admin_notes_grade_stats.sql 이 아직 실행되지 않았습니다.';
+  end if;
+  if to_regclass('public.risk_assessments') is null then
+    raise exception '0006_risk_repeat_stats.sql 이 아직 실행되지 않았습니다.';
   end if;
   if to_regclass('public.case_share_notes') is null then
     raise exception '0005_manager_forward_notes.sql 이 아직 실행되지 않았습니다.';
@@ -692,6 +699,136 @@ begin
     r := r || jsonb_build_object('t','(관리자 확인) 관리자 열람이 audit_logs 에 기록됨','want','1','got',n::text);
     select count(*) into n from public.audit_logs where target_id = v_case2 and actor_id = v_mg and action = 'VIEW_CASE';
     r := r || jsonb_build_object('t','(관리자 확인) 학년부장 열람이 audit_logs 에 기록됨','want','1','got',n::text);
+
+    -- =========== 0006: AI 분류(위험도·반복) + 학교 익명 통계 ===========
+    -- 분류는 서버(secret 키)만 쓴다 → 여기서는 관리자 권한(reset role)으로 넣어 두고 누가 볼 수 있는지 본다
+    reset role;
+    insert into public.risk_assessments (case_id, level, llm_level, category, high_risk, rule_signals, reason)
+    values (v_case, 2, 2, 'COMPLAINT', false, '{}', '[점검] 불만 제기'),
+           (v_case2, 3, 2, 'ADMIN_REVIEW', true, '{VIOLENCE}', '[점검] 신체 폭력 주장');
+
+    reset role; perform pg_temp.login(v_pa);
+    select count(*) into n from public.risk_assessments where case_id in (v_case, v_case2);
+    r := r || jsonb_build_object('t','학부모A: 내 문의라도 AI 분류(위험도)는 안 보임','want','0','got',n::text);
+    begin
+      insert into public.risk_assessments (case_id, level, category) values (v_case, 1, 'GENERAL')
+      on conflict (case_id) do update set level = 1;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','학부모A: AI 분류를 직접 고치기','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','학부모A: AI 분류를 직접 고치기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      perform public.school_stats();
+      r := r || jsonb_build_object('t','학부모A: 학교 통계 보기','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','학부모A: 학교 통계 보기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_t1);
+    select count(*) into n from public.risk_assessments where case_id in (v_case, v_case2);
+    r := r || jsonb_build_object('t','담임1: 우리 반 문의 2건의 AI 분류가 보임','want','2','got',n::text);
+    begin
+      update public.risk_assessments set level = 1 where case_id = v_case2;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','담임1: AI 분류를 직접 고치기','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: AI 분류를 직접 고치기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      perform public.school_stats();
+      r := r || jsonb_build_object('t','담임1: 학교 통계 보기 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 학교 통계 보기 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_t2);
+    select count(*) into n from public.risk_assessments where case_id in (v_case, v_case2);
+    r := r || jsonb_build_object('t','담임2: 다른 반 AI 분류는 안 보임','want','0','got',n::text);
+
+    reset role; perform pg_temp.login(v_ad);
+    select count(*) into n from public.risk_assessments where case_id = v_case2;
+    r := r || jsonb_build_object('t','관리자: 공유받은 문의의 AI 분류는 보임','want','1','got',n::text);
+    select count(*) into n from public.risk_assessments where case_id = v_case;
+    r := r || jsonb_build_object('t','관리자: 공유받지 않은 문의의 AI 분류는 안 보임','want','0','got',n::text);
+    begin
+      select (public.school_stats() -> 'all' ->> 'highRisk')::int into n;
+      r := r || jsonb_build_object('t','관리자: 학교 통계에 고위험 후보 건수가 들어 있음 (1건 이상)','want','true','got',(n >= 1)::text);
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학교 통계에 고위험 후보 건수가 들어 있음 (1건 이상)','want','true','got','실패','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_mg);
+    select count(*) into n from public.risk_assessments where case_id = v_case2;
+    r := r || jsonb_build_object('t','학년부장: 공유받은 문의의 AI 분류는 보임','want','1','got',n::text);
+    begin
+      perform public.school_stats();
+      r := r || jsonb_build_object('t','학년부장: 학교 통계 보기 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','학년부장: 학교 통계 보기 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    -- =========== 0007: 교장·교감 메모 · 학년별 통계 ===========
+    reset role; perform pg_temp.login(v_ad);
+    begin
+      perform public.add_case_note(v_case2, 'TEACHER', '[점검] 교장·교감 → 담임 메모');
+      r := r || jsonb_build_object('t','관리자: 공유받은 문의에 담임 앞 메모 남기기','want','성공','got','성공');
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 공유받은 문의에 담임 앞 메모 남기기','want','성공','got','실패','d',sqlerrm);
+    end;
+    begin
+      perform public.add_case_note(v_case, 'TEACHER', '[점검] 공유 안 된 문의에 메모');
+      r := r || jsonb_build_object('t','관리자: 공유받지 않은 문의에 메모','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 공유받지 않은 문의에 메모','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      perform public.add_case_note(v_case2, 'TEACHER', '   ');
+      r := r || jsonb_build_object('t','관리자: 빈 메모','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 빈 메모','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      perform public.add_case_note(v_case3, 'MANAGER', '[점검] 교장·교감 → 학년부장 메모 (공유도 같이)');
+      select count(*) into n from public.cases where id = v_case3 and shared_manager_at is not null;
+      r := r || jsonb_build_object('t','관리자: 학년부장 앞 메모 → 학년부장에게도 공유됨','want','1','got',n::text);
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학년부장 앞 메모 → 학년부장에게도 공유됨','want','1','got','실패','d',sqlerrm);
+    end;
+    begin
+      select jsonb_array_length(public.school_stats() -> 'grades') into n;
+      r := r || jsonb_build_object('t','관리자: 학교 통계에 학년별 통계가 들어 있음','want','true','got',(n >= 1)::text);
+      select (public.school_stats() -> 'all' ->> 'sentToSchool')::int into n;
+      r := r || jsonb_build_object('t','관리자: 학교 전체 통계의 전달 건수 (테스트 3건 이상)','want','true','got',(n >= 3)::text);
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학교 통계에 학년별 통계가 들어 있음','want','true','got','실패','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_mg);
+    select count(*) into n from public.cases where id = v_case3;
+    r := r || jsonb_build_object('t','학년부장: 교장·교감 메모로 공유된 문의가 보임','want','1','got',n::text);
+    select count(*) into n from public.case_share_notes where case_id = v_case3 and target = 'MANAGER';
+    r := r || jsonb_build_object('t','학년부장: 교장·교감이 남긴 메모가 보임','want','1','got',n::text);
+    begin
+      perform public.add_case_note(v_case3, 'TEACHER', '[점검] 학년부장 메모');
+      r := r || jsonb_build_object('t','학년부장: 메모 남기기 함수 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','학년부장: 메모 남기기 함수 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_t1);
+    select count(*) into n from public.case_share_notes where case_id = v_case2 and target = 'TEACHER';
+    r := r || jsonb_build_object('t','담임1: 교장·교감이 남긴 담임 앞 메모가 보임','want','1','got',n::text);
+    begin
+      perform public.add_case_note(v_case2, 'MANAGER', '[점검] 담임 메모');
+      r := r || jsonb_build_object('t','담임1: 메모 남기기 함수 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 메모 남기기 함수 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_pa);
+    select count(*) into n from public.case_share_notes where case_id in (v_case2, v_case3);
+    r := r || jsonb_build_object('t','학부모A: 교장·교감 메모도 안 보임','want','0','got',n::text);
 
     -- ---------- 학부모A : [상담만 종료] ----------
     reset role; perform pg_temp.login(v_pa);

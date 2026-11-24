@@ -13,7 +13,7 @@ export default function Page() {
 }
 
 async function Inbox() {
-  const { profile, cases } = await getTeacherInbox();
+  const { profile, cases, archived } = await getTeacherInbox();
   const newCount = cases.filter((c) => c.status === "NEW").length;
   const waiting = cases.filter((c) => ["TEACHER_REVIEWING", "ESCALATED", "ADMIN_REVIEWING"].includes(c.status)).length;
   const shared = cases.filter((c) => ["ESCALATED", "ADMIN_REVIEWING"].includes(c.status)).length;
@@ -26,7 +26,7 @@ async function Inbox() {
   }).format(new Date());
 
   return (
-    <TeacherShell userName={profile.display_name} newCount={newCount}>
+    <TeacherShell userName={profile.display_name} newCount={newCount} archivedCount={archived.length}>
       <main className="flex flex-col gap-[26px] px-4 pt-[30px] pb-12 sm:px-8">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm text-muted">{today} · 확인할 문의</span>
@@ -46,7 +46,7 @@ async function Inbox() {
         </div>
 
         {/* 상태(미확인→확인 중→답변 완료)가 바뀌어도 다시 만들지 않는다 → 열람 기록이 두 번 남지 않고, 쓰던 답변도 유지된다 */}
-        <InboxView cases={cases} />
+        <InboxView cases={cases} others={archived} />
       </main>
     </TeacherShell>
   );

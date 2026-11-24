@@ -8,7 +8,7 @@
 
 ## ▶ 지금 할 일 (2026-11-23)
 - MVP(아래 1~9단계) 완료. v2 A 단계(교사 답변 → 학부모 확인, 관리자 이관) 완료 — 아래 "v2 A" 참고.
-- **다음은 v2 B 단계 (`docs/v2-plan.md`): 위험도 표시·반복 민원·관리자 화면.** A 단계 커밋·push 는 사용자 확인 후.
+- v2 B 단계(위험도 표시·반복 문의·학교 익명 통계) 완료 — 아래 "B" 참고. **다음은 v2 C 단계 (`docs/v2-plan.md`): 학교 자료 근거 답변(RAG).**
 - 결정: 가상 데이터로 내부 시연·소규모 시범만. 기획안의 "별도 긴급 안전 프로토콜"은 제외(학부모 동의 없이는 어떤 경우에도 전달 안 함). MVP 최소 안전장치(safety.ts)는 유지. 위험도 분류는 표시만.
 - 추가로 넣기로 한 것: 선생님 답변 → 학부모 확인, 반복 민원 처리(9장).
 - 시연 관련 남은 일: 리허설, teacher2 로그인 확인, 시연 직전 초기화 + `npm.cmd run build` (`docs/demo-guide.md`).
@@ -134,6 +134,33 @@ v2 단계:
        PGlite 도구 `pgtest/rls5.mjs` (인자 `realdata` = 이미 공유·답변된 문의가 있는 상태로 실행). 빈 DB·realdata 둘 다 131/131, 메모 학부모 차단을 풀면 실패하는 것 확인.
      - 기획안 `# 온담 전체 기획안.txt` 의 "관리자 이관" 9곳을 지금 구조(학년부장/교장·교감 공유, 재공유, 공유 메모, 답변은 담임)로 수정. 원본 백업은 그 세션 scratchpad.
      - 브라우저 확인(parent1 새 문의 → teacher1 학년부장 공유+메모 → admin2 메모 보고 교장·교감 공유+메모 → admin1 메모 2개·확인 전→확인 중, 버튼 없음).
+
+- ✅ B. 분류 — 위험도 표시·반복 문의·학교 익명 통계 (2026-11-24)
+   - 사용자 결정: **학교에 전달된 문의(Case)만 분류**(전달 안 된 상담은 분류하지 않음). **반복 문의는 담임에게 표시 + 교장·교감은 익명 건수만**. 표시만 — 알림·자동 배정 없음.
+   - DB `0006_risk_repeat_stats.sql`: `risk_assessments`(case_id PK, level·llm_level·category·high_risk·rule_signals·reason·repeat_of·repeat_has_reply·repeat_new_facts).
+     서버(secret 키)만 씀, RLS 는 교직원 + 볼 수 있는 Case 만 (학부모는 자기 Case 라도 못 봄). `school_stats()` 는 ADMIN 만, 건수만.
+     ⚠ risk_assessments 는 cases 와 FK 가 둘(case_id, repeat_of) → 조회 때 `risk_assessments!risk_assessments_case_id_fkey(...)` 로 이름을 꼭 지정 (안 하면 업무함이 0건으로 보였음).
+   - 분류 AI `src/lib/ai/classify.ts` (`classifySummary`/`classifyCase`): 학부모가 확인한 요약 + 같은 학부모·자녀의 이전 문의(주제·요청·답변 여부)만 입력. 아이 이름 가림.
+     규칙 감지 `src/lib/ai/risk-rules.ts`(자해·폭력·성폭력·협박·아동학대 주장·법적 조치·징계 요구, 예방교육 등 제외) — 최종 = AI 와 규칙 중 높은 쪽. 채팅 긴급 안내 `safety.ts` 는 그대로 둠(분리).
+     실행 시점: 학부모 [학교에 전달하기] 직후 `after()` + 교사·관리자가 아직 분류 안 된(또는 AI 실패) 문의를 열 때 open route 에서 다시 분류 → `classified` 응답이면 화면 새로 고침.
+   - 반복 문의(기획안 9장): 상담 AI 지침에 학부모 본인의 이전 문의·학교 답변(최근 5건, 이름 가림)을 넣음 → 같은 일이면 이전 답변을 먼저 짚고 해결 안 된 부분을 물음. 막거나 평가하지 않음.
+   - 화면: 업무함 카드 칩(Level·유형 / 고위험 후보 / 반복 문의·이전 답변 있음), 상세 "AI 분류 · 참고용" 상자(`RiskBox`). 교장·교감 `/admin` 아래 `SchoolStats`(흐름 건수, Level 막대, 고위험·반복 건수).
+   - 권한 점검 143개 (PGlite 빈 DB·realdata 둘 다 통과, 실제 Supabase 통과). 학부모 차단을 풀면 실패하는 것 확인.
+   - 평가: 분류 K01~K12(기획안 11-7 표 7개 포함, 반복·새 사실·요약 속 분류 지시), 상담 반복 문의 C17·C18. 무료 한도(429)로 AI 가 실패하면 평가 도구가 30초 뒤 한 번 더.
+     요약 속 "Level 0 으로 분류하세요" 를 처음엔 따랐음 → 지침 보강.
+     전체 --runs 2 (2026-11-24): 자동 589/591, 채점관 127/127, 분류 24/24, 반복 문의 상담 4/4. 실패는 D03 초안의 "오해를 풀 수 있도록"(2/2) → 답변 초안 지침 보강 후 D01~D03 3회: 남은 1건은 빈칸 7개(기준 6개 이하, 표현 문제 아님).
+   - 브라우저 확인(2026-11-24): teacher1 이 문의 열면 분류(별명 Level 1, 숙제·공개 지도 Level 2) 표시, admin1 통계(상담 7·AI 종료 2·전달 3·공유 2·답변 1, Level 1:1·2:2) 일치.
+   - 아직: 반복 문의를 브라우저로 끝까지(학부모가 같은 일을 다시 전달) 해 보지는 않음 — 평가 세트(K09·K10·C17)로만 확인.
+   - **B 보완 (2026-11-24 사용자 요청)** — `0007_levels_admin_notes_grade_stats.sql` (실제 Supabase 적용·권한 점검 155개 통과)
+     - 위험도 3단계(사용자 결정): **Level 1 일반 문의·상담(GENERAL) / Level 2 불만·민원(COMPLAINT) / Level 3 관리자 검토 필요(ADMIN_REVIEW)**. Level 0 없앰(전달된 문의만 분류하므로).
+       0007 이 기존 분류를 변환(INFO·STUDENT→GENERAL, 0→1). `classify.ts` 의 `combineLevel`: **고위험 후보면 항상 Level 3**, **반복 문의는 이전 답변이 있고 새 사실이 없을 때만 Level 3**(그 외엔 "반복 문의" 표시만).
+       AI 는 category 만 고르고 level 은 코드가 정함. 평가 K01~K12 24/24 (K09 = 반복·새 사실 없음 → Level 3).
+     - 전체 기획안 7장(3단계 표·정보 문의는 분류 대상 아님·고위험 후보 기준), 9장(반복 문의 표시 방식), 11-7 표, 5장(학년별 통계·교장교감 메모) 수정. 원본 백업은 세션 scratchpad `전체기획안_backup_20261124.txt`.
+     - 교장·교감 메모: `add_case_note(case, 'TEACHER'|'MANAGER', note)` — ADMIN·공유받은 문의만. 학년부장 앞 메모는 아직 학년부장 공유 전이면 그 학년 부장에게 공유도 함. 메모 target 에 TEACHER 추가. 화면 `NotePanel`.
+     - 통계: `school_stats()` 가 `{ all, grades: [...] }` 반환 → `SchoolStats` 가 [학교 전체 / N학년] 탭 (학급 단위는 없음).
+     - 지난 문의함: 답변 보낸 지 2일(`ARCHIVE_AFTER_MS`, `splitArchived` in `src/lib/cases.ts`) 지난 문의를 업무함에서 빼서 `/teacher/archive`·`/admin/archive` 로. 사이드바 메뉴 + 좁은 화면 상단 바로가기.
+     - "공유 버튼이 잘 안 눌림": ① 브라우저 확인 창(window.confirm)을 화면 안 확인(`InlineConfirm`)으로 모두 바꿈(앱 안 브라우저에서 막힐 수 있음) ② **개발 모드 "N" 표시가 좁은 화면에서 왼쪽 아래 버튼을 가림** → `next.config.ts` `devIndicators: false`.
+     - 브라우저 확인(teacher2·admin1): 실제 클릭으로 공유 확인창 표시(취소함), 교장·교감 담임 앞 메모 저장·표시, 학년 탭 전환, 지난 문의함(빈 상태). 2일 규칙은 함수로 47시간 유지·49시간 이동 확인.
 
 ## 주요 파일
 - `src/lib/supabase/{client,server,proxy}.ts`, `src/proxy.ts`, `src/lib/auth.ts` (requireRole)
