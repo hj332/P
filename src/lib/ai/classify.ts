@@ -5,6 +5,7 @@ import { maskChildName } from "./reply-draft";
 import { detectRiskSignals, ruleFloor, type RiskSignal } from "./risk-rules";
 import { DOC_QUERY_RULE, cleanDocQuery } from "./doc-query";
 import { parseSummary, type Summary } from "@/lib/summary";
+import { SUBJECTS, isSubject, type Subject } from "@/lib/subjects";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 분석·분류 AI (기획안 10-B, 7장, 9장, 11-5).
@@ -28,6 +29,7 @@ export type Classification = {
   repeatIndex: number | null; // previous 목록에서 같은 사안의 위치 (0부터), 없으면 null
   newFacts: boolean | null;
   docQuery: string | null; // 관련 학교 자료를 찾을 "규정 말투" 검색어 (0009)
+  subject: Subject | null; // 주제 분야 (통계용, 0010)
 };
 
 export const CLASSIFY_SYSTEM = `너는 학교에 전달된 학부모 문의를 분류하는 도우미다. 학부모에게는 보이지 않고, 선생님이 참고만 한다.
@@ -55,6 +57,16 @@ export const CLASSIFY_SYSTEM = `너는 학교에 전달된 학부모 문의를 �
 ## doc_query
 ${DOC_QUERY_RULE}
 
+## subject (주제 분야 — 통계용, 위험도와 상관없음)
+문의가 주로 무엇에 관한 것인지 하나만 고른다.
+- PEER 교우관계: 친구와의 갈등·다툼, 놀림·별명, 따돌림, 학교폭력 걱정
+- GUIDANCE 생활지도·훈육: 선생님의 지도 방식·말·행동, 꾸중·훈계·제지, 벌·규칙 적용
+- LEARNING 학습·숙제·평가: 수업, 숙제 양, 시험·평가, 성적, 학습 부진
+- SAFETY 안전·건강: 다침, 몸·마음 건강, 급식 알레르기, 안전사고, 학교 가기 싫어함·불안 같은 마음·적응 문제
+- SCHOOL_LIFE 학교 행사·행정: 체험학습·현장학습, 학교 일정, 급식 메뉴, 방과후, 출결·서류 같은 안내·절차 문의만 ("학교생활 전반"이라는 뜻이 아니다)
+- OTHER 기타: 위에 해당하지 않을 때
+선생님의 행동 때문에 아이가 다쳤다는 문의처럼 둘 이상이면, 학부모가 가장 문제 삼는 쪽을 고른다.
+
 ## reason
 선생님이 볼 근거 1~2문장. 요약에 있는 내용만 쓴다. 아이 이름·추측·평가하는 말("악성", "과민", "진상")은 쓰지 않는다.
 
@@ -71,9 +83,10 @@ const SCHEMA: Schema = {
     new_facts: { type: Type.BOOLEAN },
     reason: { type: Type.STRING },
     doc_query: { type: Type.STRING },
+    subject: { type: Type.STRING, enum: [...SUBJECTS] },
   },
-  required: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query"],
-  propertyOrdering: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query"],
+  required: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query", "subject"],
+  propertyOrdering: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query", "subject"],
 };
 
 const summaryText = (s: Summary) =>
@@ -128,6 +141,7 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       new_facts: boolean;
       reason: string;
       doc_query?: string;
+      subject?: string;
     };
     const aiCategory: Category = o.category in LEVEL_OF ? o.category : "GENERAL";
     const idx = Math.round(Number(o.repeat_index) || 0);
@@ -145,6 +159,7 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       ruleSignals: signals,
       reason: maskChildName(String(o.reason ?? "").trim(), childName).slice(0, 300),
       docQuery: cleanDocQuery(maskChildName(String(o.doc_query ?? ""), childName)),
+      subject: isSubject(o.subject) ? o.subject : null,
       repeatIndex,
       newFacts,
     };
@@ -160,6 +175,7 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       repeatIndex: null,
       newFacts: null,
       docQuery: null,
+      subject: null,
     };
   }
 }
@@ -200,7 +216,7 @@ export async function classifyCase(caseId: string) {
   const c = await classifySummary(summary, previous, childName);
   const repeatCase = c.repeatIndex !== null ? prevCases[c.repeatIndex] : null;
 
-  const { error } = await admin.from("risk_assessments").upsert({
+  const row = {
     case_id: caseId,
     level: c.level,
     llm_level: c.llmLevel,
@@ -212,7 +228,15 @@ export async function classifyCase(caseId: string) {
     repeat_has_reply: repeatCase ? previous[c.repeatIndex!].hasReply : false,
     repeat_new_facts: c.newFacts,
     doc_query: c.docQuery,
+    subject: c.subject,
     updated_at: new Date().toISOString(),
-  });
+  };
+  let { error } = await admin.from("risk_assessments").upsert(row);
+  // 0010(subject 칸)을 아직 실행하지 않은 DB 에서도 분류는 저장되게
+  if (error && /subject/.test(error.message)) {
+    const { subject: _skip, ...rest } = row;
+    void _skip;
+    ({ error } = await admin.from("risk_assessments").upsert(rest));
+  }
   if (error) console.error("[classify] 저장 실패", error.message);
 }

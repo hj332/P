@@ -747,6 +747,19 @@ begin
     exception when others then
       r := r || jsonb_build_object('t','담임1: 학교 통계 보기 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
     end;
+    begin
+      perform public.school_stats(now() - interval '30 days', now());
+      r := r || jsonb_build_object('t','담임1: 기간을 정한 학교 통계 보기 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 기간을 정한 학교 통계 보기 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      update public.risk_assessments set subject = 'OTHER' where case_id = v_case2;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','담임1: AI 주제 분야를 직접 고치기','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: AI 주제 분야를 직접 고치기','want','막힘','got','막힘','d',sqlerrm);
+    end;
 
     reset role; perform pg_temp.login(v_t2);
     select count(*) into n from public.risk_assessments where case_id in (v_case, v_case2);
@@ -808,6 +821,20 @@ begin
       r := r || jsonb_build_object('t','관리자: 학교 전체 통계의 전달 건수 (테스트 3건 이상)','want','true','got',(n >= 3)::text);
     exception when others then
       r := r || jsonb_build_object('t','관리자: 학교 통계에 학년별 통계가 들어 있음','want','true','got','실패','d',sqlerrm);
+    end;
+    -- 0010: 기간 · 주제 분야 · 학년별 작은 숫자 가리기
+    begin
+      select (public.school_stats(now() + interval '1 day', null) -> 'all' ->> 'sentToSchool')::int into n;
+      r := r || jsonb_build_object('t','관리자: 앞으로의 기간 통계는 0건 (기간 필터)','want','0','got',n::text);
+      select (public.school_stats(now() - interval '1 day', now() + interval '1 day') -> 'all' ->> 'sentToSchool')::int into n;
+      r := r || jsonb_build_object('t','관리자: 오늘 포함 기간 통계에 테스트 문의 3건 이상','want','true','got',(n >= 3)::text);
+      select coalesce(sum((g ->> 'sentToSchool')::int), 0) - (public.school_stats() -> 'all' ->> 'sentToSchool')::int into n
+      from jsonb_array_elements(public.school_stats() -> 'grades') g;
+      r := r || jsonb_build_object('t','관리자: 학년별 전달 건수 합 = 학교 전체 (가리지 않고 그대로)','want','0','got',n::text);
+      select count(*) into n from jsonb_object_keys(public.school_stats() -> 'all' -> 'subjects');
+      r := r || jsonb_build_object('t','관리자: 주제 분야별 건수 7칸','want','7','got',n::text);
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 기간·주제 통계','want','성공','got','실패','d',sqlerrm);
     end;
 
     reset role; perform pg_temp.login(v_mg);

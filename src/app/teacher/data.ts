@@ -3,7 +3,8 @@ import { requireRole } from "@/lib/auth";
 import { splitArchived, type CaseReply, type NoteTarget, type ShareNote } from "@/lib/cases";
 import { parseSummary, type Summary } from "@/lib/summary";
 import { parseRisk, type Risk } from "@/lib/risk";
-import type { SchoolStatsData } from "@/components/admin/SchoolStats";
+import type { PeriodStats, SchoolStatsData } from "@/components/admin/SchoolStats";
+import { monthRange, statPeriods } from "@/lib/stat-periods";
 
 // 교사 업무함·관리자 목록 데이터. 로그인한 사람의 권한(RLS)으로 읽으므로
 //  - 교사: "학부모가 전달에 동의했고, 나에게 배정됐고, 내 학급 학생인" Case 만
@@ -71,14 +72,47 @@ export async function getTeacherInbox() {
   return { profile, cases: active, archived };
 }
 
-export async function getAdminCases() {
+export async function getAdminCases({ withStats = true }: { withStats?: boolean } = {}) {
   const { supabase, profile } = await requireRole(["ADMIN", "MANAGER"]);
-  // 학교 익명 통계는 교장·교감만 (DB 함수가 다시 확인한다)
+  const now = Date.now(); // requireRole() 이 connection() 으로 요청 시점 렌더링을 보장한다
+  // 학교 익명 통계는 교장·교감만 (DB 함수가 다시 확인한다) — 기간별(이번 주/이번 달/이번 학기/전체)로 한 번에 불러 둔다
   const [cases, stats] = await Promise.all([
     loadCases(supabase, { orderBy: "escalated_at" }),
-    profile.role === "ADMIN" ? supabase.rpc("school_stats") : Promise.resolve({ data: null, error: null }),
+    withStats && profile.role === "ADMIN" ? loadPeriodStats(supabase, now) : Promise.resolve(null),
   ]);
-  if (stats.error) console.error("[school_stats]", stats.error.message);
-  const { active, archived } = splitArchived(cases, Date.now());
-  return { profile, cases: active, archived, stats: (stats.data as SchoolStatsData | null) ?? null };
+  const { active, archived } = splitArchived(cases, now);
+  return { profile, cases: active, archived, stats };
+}
+
+// 기간을 정해 school_stats(p_from, p_to) 를 부른다 (0010). 실패하면 null.
+export async function loadSchoolStats(supabase: Supa, from: string | null, to: string | null) {
+  const { data, error } = await supabase.rpc("school_stats", { p_from: from, p_to: to });
+  if (error) {
+    console.error("[school_stats]", error.message);
+    return null;
+  }
+  return data as SchoolStatsData;
+}
+
+async function loadPeriodStats(supabase: Supa, now: number): Promise<PeriodStats[] | null> {
+  const periods = statPeriods(now);
+  const all = await Promise.all(periods.map((p) => loadSchoolStats(supabase, p.from, p.to)));
+  if (all.every((s) => !s)) {
+    // 0010 을 아직 실행하지 않은 DB: 예전 함수(인자 없음)로 전체 기간만
+    const { data } = await supabase.rpc("school_stats");
+    return data ? [{ ...periods[3], stats: data as SchoolStatsData }] : null;
+  }
+  return periods.flatMap((p, i) => (all[i] ? [{ ...p, stats: all[i]! }] : []));
+}
+
+// 월간 보고서 (교장·교감만) — "2026-11" 같은 달. 그 달 1일 ~ 다음 달 1일 (KST)
+export async function getMonthlyReport(month: string | undefined) {
+  const { supabase, profile } = await requireRole(["ADMIN"]);
+  const now = Date.now(); // requireRole() 이 connection() 으로 요청 시점 렌더링을 보장한다
+  const r = monthRange(month, now);
+  const [stats, school] = await Promise.all([
+    r.isFuture ? Promise.resolve(null) : loadSchoolStats(supabase, r.from, r.to),
+    supabase.from("schools").select("name").maybeSingle(),
+  ]);
+  return { profile, now, r, stats, schoolName: school.data?.name ?? "학교" };
 }

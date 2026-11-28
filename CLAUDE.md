@@ -8,7 +8,7 @@
 
 ## ▶ 지금 할 일 (2026-11-23)
 - MVP(아래 1~9단계) 완료. v2 A 단계(교사 답변 → 학부모 확인, 관리자 이관) 완료 — 아래 "v2 A" 참고.
-- v2 B 단계(위험도 표시·반복 문의·학교 익명 통계), C 단계(학교 자료 근거 답변) 완료 — 아래 "B"·"C" 참고. **다음은 v2 D 단계 (`docs/v2-plan.md`): 다듬기(상담 가능시간·모바일·통계 고도화).**
+- v2 B 단계(위험도 표시·반복 문의·학교 익명 통계), C 단계(학교 자료 근거 답변) 완료 — 아래 "B"·"C" 참고. **v2 D 단계 (`docs/v2-plan.md`) 진행 중: 모바일·통계 고도화 — 아래 "D" 참고.** (상담 가능시간은 하지 않기로 함)
 - 결정: 가상 데이터로 내부 시연·소규모 시범만. 기획안의 "별도 긴급 안전 프로토콜"은 제외(학부모 동의 없이는 어떤 경우에도 전달 안 함). MVP 최소 안전장치(safety.ts)는 유지. 위험도 분류는 표시만.
 - 추가로 넣기로 한 것: 선생님 답변 → 학부모 확인, 반복 민원 처리(9장).
 - 시연 관련 남은 일: 리허설, teacher2 로그인 확인, 시연 직전 초기화 + `npm.cmd run build` (`docs/demo-guide.md`).
@@ -113,7 +113,7 @@ v2 단계:
    - 화면: 교사 `InboxView`(필터 전체/미확인/답변 대기/답변 완료, 상세 아래 답변 작성·AI 초안·관리자와 공유, 보낸 답변·학부모 확인 여부 표시) — 관리자 `/admin` 도 같은 컴포넌트(mode="admin", 버튼 없음).
      `TeacherShell area="admin"`. 열람 기록 route 는 `/teacher|admin/cases/[id]/open` → `src/lib/open-case-route.ts`.
      학부모: 사이드바 "선생님 답변 도착"(→ `/parent/cases/[caseId]`), 상태 표시 "학교 전달 완료 · 선생님 답변 도착", 채팅 화면 배너 [선생님 답변 보기],
-     답변 화면 `src/app/parent/cases/[caseId]/page.tsx` + `ReplyConfirm`(답변 잘 받았어요 → 마무리 / 추가로 문의할게요 → 새 상담). 상담 가능시간 신청은 D.
+     답변 화면 `src/app/parent/cases/[caseId]/page.tsx` + `ReplyConfirm`(답변 잘 받았어요 → 마무리 / 추가로 문의할게요 → 새 상담). 상담 가능시간 신청은 하지 않기로 함(2026-11-28).
      역할별 첫 화면 `src/lib/roles.ts` `homePathFor` (ADMIN → /admin). 교사 업무함은 TEACHER·MANAGER 만.
    - 평가: `eval-set.json` 에 답변 초안 D01~D07 추가(`eval/run.ts` runDraft). 전체 --runs 2: 자동 442/443, 채점관 115/115 → 실패 1건(학부모 이야기와 "차이가 있다"고 전제) 지침 보강 후 D01·D03 3회 모두 통과.
    - 2026-11-23 브라우저 확인(teacher1·admin1·parent1, 로그인은 사용자): AI 초안 → 빈칸 경고 → 답변(RESOLVED) / 관리자와 공유(ESCALATED) → 관리자 목록 1건만·열면 ADMIN_REVIEWING, 관리자가 /teacher·/parent 가면 /admin 으로
@@ -211,6 +211,22 @@ v2 단계:
      - 근거 카드: AI 가 제목의 괄호 부분을 빼고 말해도("아동학대 관련 법률 기준 요약") 근거로 봄(`citedDocs`).
      - 검색 고르기 다시 보정(`pickRelevant`): 1등 0.68 이상이면 "1등 - 0.03" 이상만(최대 3) — 비등한 관련 자료 둘을 함께 고르고, 1등 뒤에 붙던 엉뚱한 자료는 뺌. 2등 비교는 다른 문서끼리(같은 문서 다른 조각 제외).
      - 평가: 법률 C23~C28 + C14(단정 없음·신고·고소엔 무고 정보·조항 안 지어냄·속상한 학부모에겐 안 꺼냄), 검색 Q16~Q18, `expectAny`(관련 자료가 둘 이상일 때). 채점관에게도 AI 가 받은 자료를 보여 주도록 고침(안 보여 주면 자료 내용을 "지어냈다"고 오채점).
+
+- 🔄 D. 다듬기 (2026-11-28) — 사용자 결정으로 범위 축소
+   - **하지 않는 것**: 상담 가능시간 설정·상담 시간 신청(전체 기획안 교사 기능 목록에서도 삭제, 백업은 세션 scratchpad `전체기획안_backup_20261128.txt`),
+     AI 답변 초안의 "[상담 가능한 날짜와 시간]" 빈칸, 통계의 근무시간 외 상담 비율·시간대별 그래프, "가상 상황만 입력" 안내 문구, 학년별 작은 숫자 가림(반 단위 통계가 없으므로).
+   - 통계 고도화 `0010_stats_period_subject.sql`: `school_stats(p_from, p_to)`(null = 전체, 상담은 시작일·문의는 전달일 기준) + `risk_assessments.subject`(주제 분야).
+     처음 버전은 학년별 1~2건을 -1 로 가렸으나 사용자 결정으로 뺌(0010 을 고쳐 다시 실행, `stat_mask` 함수는 지움). 권한 점검 184개(PGlite 빈 DB·realdata 통과).
+     기간 계산 `src/lib/stat-periods.ts`(KST, 주는 월요일, 학기 3·9월, 1~2월은 지난해 2학기). `getAdminCases` 가 4개 기간을 한 번에 불러 `SchoolStats` 가 [기간]×[학교 전체/학년] 탭.
+     0010 을 아직 안 돌린 DB 면 예전 `school_stats()` 로 "전체"만 보여 줌.
+   - 주제 분야 `src/lib/subjects.ts`: 교우관계 PEER / 생활지도·훈육 GUIDANCE / 학습·숙제·평가 LEARNING / 안전·건강 SAFETY(학교 가기 싫어함 같은 마음·적응 포함) / 학교 행사·행정 SCHOOL_LIFE(안내·절차 문의만) / 기타 OTHER.
+     분류 AI(`classify.ts`)가 함께 고름, 0010 전 DB 면 subject 없이 저장. 예전 문의는 "주제 분야 분류 전"으로 셈. 평가 K01~K07·K11 에 `subject` 기대값, 2회 16/16.
+   - 월간 보고서 `/admin/report?month=YYYY-MM` (교장·교감만, `getMonthlyReport`): 학교 전체 + 학년별 표, 이전/다음 달, [인쇄하기·PDF 저장](`PrintButton`, window.print).
+     ⚠ "use client" 파일(SchoolStats.tsx)의 일반 함수를 서버 화면에서 부르면 실행 오류 — 서버에서 쓸 값은 서버에서 계산할 것.
+   - 브라우저(admin1, 0010 적용 후): 기간 탭 이번 주(11.23~11.28)·이번 달, 학년 탭 숫자 그대로, 주제 분야 막대(예전 문의 4건은 분류 전), 월간 보고서 11월·10월(0건). 인쇄 창은 열어 보지 않음.
+   - 휴대폰 학부모 화면: `ParentShell` 의 `MobileConversations` — 좁은 화면에서 접었다 펴는 "상담 내역 N" + "선생님 답변 도착 N" 배지 + 새 상담(<details>, JS 없음).
+     브라우저(parent1, 375px): 상담 내역 펼치기, [원문 보기] 한 번에 열림, 답변 화면 가로 스크롤 없음.
+   - 작은 정리: AI 상담 답변의 "어머님/아버님" → "학부모님"(`fixHonorific`, gemini.ts), 신고·고소 질문엔 무고 안내와 132·교육청 안내를 같이(지침), 평가 C21 금지어 "보통"은 숫자가 붙을 때만.
 
 ## 주요 파일
 - `src/lib/supabase/{client,server,proxy}.ts`, `src/proxy.ts`, `src/lib/auth.ts` (requireRole)

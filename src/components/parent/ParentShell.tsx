@@ -49,16 +49,7 @@ export function ParentShell({
       <div className="flex flex-1 items-stretch">
         <ConversationSidebar conversations={conversations} currentId={currentId} />
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* 좁은 화면: 사이드바 대신 새 상담 버튼만 */}
-          <div className="flex items-center justify-between gap-3 border-b border-[#E3EEDD] bg-[#F6FAF2] px-4 py-2.5 lg:hidden">
-            <span className="text-sm text-muted">상담 내역은 넓은 화면에서 볼 수 있어요</span>
-            <Link
-              href="/parent/chat"
-              className="flex min-h-11 items-center gap-1.5 rounded-xl bg-deep-green px-4 text-sm font-bold text-white"
-            >
-              <Icon name="chat" size={16} />새 상담
-            </Link>
-          </div>
+          <MobileConversations conversations={conversations} currentId={currentId} />
           {children}
         </div>
         {aside}
@@ -135,6 +126,65 @@ function ConversationSidebar({ conversations, currentId }: { conversations: Conv
         <span>상담 내역은 학부모님만 볼 수 있어요. ‘학교에 전달하기’를 선택한 상담만 선생님께 전달됩니다.</span>
       </div>
     </aside>
+  );
+}
+
+// 좁은 화면(휴대폰): 사이드바 대신 접었다 펴는 "상담 내역" + 새 상담 버튼 (v2 D 모바일, ParentMobile*.html)
+// 선생님 답변이 왔는데 아직 확인하지 않은 상담이 있으면 접힌 상태에서도 "답변 도착 N" 이 보인다.
+// <details> 라 자바스크립트 없이 열고 닫힌다.
+function MobileConversations({ conversations, currentId }: { conversations: ConversationItem[]; currentId: string | null }) {
+  const unread = conversations.filter((c) => hasReply(c.caseStatus) && c.caseStatus !== "CLOSED");
+  const open = conversations.filter((c) => ["ACTIVE", "WAITING_FOR_PARENT", "SUMMARY_READY", "CONSENT_PENDING"].includes(c.status));
+  const past = conversations.filter((c) => !open.includes(c));
+  return (
+    <details className="group border-b border-[#E3EEDD] bg-[#F6FAF2] lg:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 [&::-webkit-details-marker]:hidden">
+        <span className="flex min-h-11 flex-1 items-center gap-2 text-[15px] font-bold text-heading">
+          <Icon name="fileText" size={18} />
+          상담 내역 {conversations.length}
+          {unread.length > 0 && (
+            <span className="rounded-md bg-highlight px-2 py-0.5 text-xs font-bold text-heading">선생님 답변 도착 {unread.length}</span>
+          )}
+          <span className="ml-auto text-xs font-medium text-muted group-open:hidden">펼치기</span>
+          <span className="ml-auto hidden text-xs font-medium text-muted group-open:inline">접기</span>
+        </span>
+        <Link
+          href="/parent/chat"
+          className="flex min-h-11 flex-none items-center gap-1.5 rounded-xl bg-deep-green px-4 text-sm font-bold text-white"
+        >
+          <Icon name="chat" size={16} />새 상담
+        </Link>
+      </summary>
+      <div className="flex max-h-[60dvh] flex-col gap-3 overflow-y-auto px-3 pb-4">
+        {conversations.length === 0 && <p className="m-0 px-1.5 text-sm text-muted">아직 상담 내역이 없어요.</p>}
+        {unread.length > 0 && (
+          <nav aria-label="선생님 답변이 온 상담" className="flex flex-col gap-1.5">
+            <span className="px-1.5 text-[13px] font-bold text-muted">선생님 답변 도착</span>
+            {unread.map((c) => (
+              <SidebarItem key={c.id} c={c} current={c.id === currentId} />
+            ))}
+          </nav>
+        )}
+        {open.length > 0 && (
+          <nav aria-label="진행 중인 상담" className="flex flex-col gap-1.5">
+            <span className="px-1.5 text-[13px] font-bold text-muted">진행 중</span>
+            {open.map((c) => (
+              <SidebarItem key={c.id} c={c} current={c.id === currentId} />
+            ))}
+          </nav>
+        )}
+        {past.filter((c) => !unread.includes(c)).length > 0 && (
+          <nav aria-label="지난 상담" className="flex flex-col gap-1.5">
+            <span className="px-1.5 text-[13px] font-bold text-muted">지난 상담</span>
+            {past
+              .filter((c) => !unread.includes(c))
+              .map((c) => (
+                <SidebarItem key={c.id} c={c} current={c.id === currentId} />
+              ))}
+          </nav>
+        )}
+      </div>
+    </details>
   );
 }
 

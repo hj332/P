@@ -8,7 +8,7 @@ import { formatCaseTime, sharedWithLabel } from "@/lib/cases";
 import { SUMMARY_ROWS, parseSummary } from "@/lib/summary";
 import { formatKoreanDateTime, getParentCase, getParentContext } from "../../data";
 
-// 선생님 답변 확인 (design/screens/ParentReply.html). 상담 가능시간 신청은 D 단계.
+// 선생님 답변 확인 (design/screens/ParentReply.html). 디자인의 상담 시간 선택은 만들지 않기로 함(2026-11-28).
 export default function Page(props: PageProps<"/parent/cases/[caseId]">) {
   return (
     <Suspense fallback={<p className="p-6 text-muted">불러오는 중…</p>}>

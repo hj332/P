@@ -86,8 +86,14 @@ export async function generateText(opts: GenerateOptions): Promise<string> {
 }
 
 // 학부모 상담 답변
-export function generateCounselorReply(systemPrompt: string, history: ChatTurn[]) {
-  return generateText({ systemPrompt, history });
+export async function generateCounselorReply(systemPrompt: string, history: ChatTurn[]) {
+  return fixHonorific(await generateText({ systemPrompt, history }));
+}
+
+// 지침으로 막아도 가끔 "어머님/아버님"이라고 부른다 (평가 C27, 2026-11-28) → 성별을 짐작하지 않게 "학부모님"으로 바꾼다.
+// "어머니/아버지"는 학부모가 말한 사람(아이 아버지 등)을 가리킬 수 있어 건드리지 않는다.
+export function fixHonorific(text: string) {
+  return text.replace(/어머님|아버님/g, "학부모님");
 }
 
 // 사용자에게 보여 줄 실패 안내

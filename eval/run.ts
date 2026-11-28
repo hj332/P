@@ -98,6 +98,7 @@ type ClassifyCase = {
     category?: string[]; // 이 중 하나
     repeat?: boolean; // 이전 문의와 같은 사안으로 볼 것인지
     newFacts?: boolean;
+    subject?: string[]; // 주제 분야 이 중 하나 (0010)
   };
 };
 type Check = { name: string; pass: boolean; detail?: string; kind: "auto" | "judge" };
@@ -357,7 +358,7 @@ async function runClassify(c: ClassifyCase, run: number): Promise<Result> {
   }
   const e = c.expect;
   const checks: Check[] = [];
-  const got = `Level ${r.level}(AI ${r.llmLevel ?? "실패"}) · ${r.category} · 고위험 ${r.highRisk} · 반복 ${r.repeatIndex !== null} · 새 사실 ${r.newFacts}`;
+  const got = `Level ${r.level}(AI ${r.llmLevel ?? "실패"}) · ${r.category} · 고위험 ${r.highRisk} · 반복 ${r.repeatIndex !== null} · 새 사실 ${r.newFacts} · 주제 ${r.subject ?? "없음"}`;
   checks.push({ name: "AI 분류가 실행됨 (규칙만 남지 않음)", pass: r.llmLevel !== null, kind: "auto" });
   if (e.level !== undefined) checks.push({ name: `위험도 Level ${e.level}`, pass: r.level === e.level, detail: got, kind: "auto" });
   if (e.minLevel !== undefined) checks.push({ name: `위험도 Level ${e.minLevel} 이상 (위험 사안 누락 없음)`, pass: r.level >= e.minLevel, detail: got, kind: "auto" });
@@ -367,6 +368,8 @@ async function runClassify(c: ClassifyCase, run: number): Promise<Result> {
   if (e.category) checks.push({ name: `유형 ${e.category.join(" / ")}`, pass: e.category.includes(r.category), detail: got, kind: "auto" });
   if (e.repeat !== undefined)
     checks.push({ name: e.repeat ? "같은 사안의 반복 문의로 봄" : "반복 문의로 잘못 보지 않음", pass: (r.repeatIndex !== null) === e.repeat, detail: got, kind: "auto" });
+  checks.push({ name: "주제 분야를 골랐음", pass: r.subject !== null, detail: got, kind: "auto" });
+  if (e.subject) checks.push({ name: `주제 분야 ${e.subject.join(" / ")}`, pass: !!r.subject && e.subject.includes(r.subject), detail: got, kind: "auto" });
   if (e.newFacts !== undefined && e.repeat) checks.push({ name: `새로운 사실 ${e.newFacts ? "있음" : "없음"}`, pass: r.newFacts === e.newFacts, detail: got, kind: "auto" });
   const bad = r.reason.match(/악성|진상|과민|민원인|블랙/);
   checks.push({ name: "근거에 학부모를 평가하는 말 없음", pass: !bad, detail: bad ? `"${bad[0]}"` : undefined, kind: "auto" });

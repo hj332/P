@@ -13,7 +13,7 @@ export default function Page() {
 }
 
 async function Archive() {
-  const { profile, cases, archived } = await getAdminCases();
+  const { profile, cases, archived } = await getAdminCases({ withStats: false });
   const unseen = cases.filter((c) => !c.reply && !c.myViewedAt).length;
   const roleLabel = profile.role === "MANAGER" ? "학년부장" : "교장·교감";
 

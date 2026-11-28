@@ -5,7 +5,7 @@ import { SchoolStats } from "@/components/admin/SchoolStats";
 import { getAdminCases } from "../teacher/data";
 
 // 공유받은 문의 최소 목록 — 교장·교감(ADMIN)·학년부장(MANAGER)에게 담임이 공유한 문의만 보인다 (DB RLS).
-// 교장·교감에게는 위에 학교 익명 통계(school_stats)도 보인다 (v2 B). 고위험·반복은 건수만, 내용은 공유받은 문의만.
+// 교장·교감에게는 아래에 학교 익명 통계(school_stats)도 보인다 (v2 B, D: 기간·주제 분야·월간 보고서). 고위험·반복은 건수만, 내용은 공유받은 문의만.
 export default function Page() {
   return (
     <Suspense fallback={<p className="p-6 text-muted">불러오는 중…</p>}>
@@ -42,7 +42,7 @@ async function AdminList() {
 
         <InboxView cases={cases} others={archived} mode="admin" viewerRole={profile.role} />
 
-        {stats && <SchoolStats s={stats} />}
+        {stats && stats.length > 0 && <SchoolStats periods={stats} />}
       </main>
     </TeacherShell>
   );
