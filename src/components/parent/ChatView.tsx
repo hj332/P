@@ -7,6 +7,7 @@ import { AiAvatar } from "@/components/brand/Logo";
 import { Icon } from "@/components/brand/icons";
 import { createSummary, retryReply, sendParentMessage, type ChatMessage } from "@/app/parent/actions";
 import { isOpen } from "@/lib/summary";
+import type { SourceRef } from "@/lib/documents";
 
 const QUICK_STARTS = ["학교생활 정보가 궁금해요", "아이와 관련해 담임선생님께 상담을 요청하고 싶어요"];
 
@@ -205,6 +206,7 @@ export function ChatView({
           ) : (
             <AiRow key={m.id}>
               <AiBubble first>{m.content}</AiBubble>
+              {m.sources && m.sources.length > 0 && <SourceCards sources={m.sources} />}
             </AiRow>
           ),
         )}
@@ -397,6 +399,36 @@ function AiBubble({ children, first }: { children: React.ReactNode; first?: bool
       }
     >
       {children}
+    </div>
+  );
+}
+
+// 근거 카드 (ParentChat.html "관련 기준 안내" / 기획안 사례 1 "근거자료 · 원문 보기")
+// AI 가 답변 끝에 [[근거:번호]] 로 표시한 학교 자료만 보여 준다 (messages.sources).
+function SourceCards({ sources }: { sources: SourceRef[] }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-[18px] border border-[#D6E5CF] bg-white px-4 py-3.5 sm:px-5">
+      <span className="flex items-center gap-2 text-sm font-bold text-ok-fg">
+        <Icon name="book" size={16} />
+        학교 자료 근거
+      </span>
+      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+        {sources.map((s) => (
+          <li key={s.documentId} className="flex flex-wrap items-center gap-2 text-[13px]">
+            <span className="inline-flex items-center gap-1.5 rounded-lg bg-bg-soft px-3 py-1.5 text-ok-fg">
+              <Icon name="fileText" size={14} />
+              근거 · {s.title}
+              {s.isSample && <span className="text-muted">(시연용 가상 자료)</span>}
+            </span>
+            <Link
+              href={`/parent/documents/${s.documentId}`}
+              className="inline-flex min-h-8 items-center font-bold text-deep-green underline underline-offset-4"
+            >
+              원문 보기
+            </Link>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

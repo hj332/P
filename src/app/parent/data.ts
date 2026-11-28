@@ -84,7 +84,7 @@ export async function getConversation(
   const [{ data: messages }, { data: caseRow }] = await Promise.all([
     supabase
       .from("messages")
-      .select("id, role, content")
+      .select("id, role, content, sources")
       .eq("conversation_id", conv.id)
       .order("created_at", { ascending: true }),
     supabase.from("cases").select("id, status, final_summary").eq("conversation_id", conv.id).maybeSingle(),

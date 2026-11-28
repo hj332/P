@@ -9,6 +9,8 @@ const AREAS = {
     section: "교사",
     href: "/teacher/inbox",
     archiveHref: "/teacher/archive",
+    docsHref: "/teacher/documents",
+    docsNav: "학교·학급 자료",
     nav: "교사 업무함",
     noteTitle: "학부모가 동의한 내용만",
     note: "학부모가 직접 확인하고 전달에 동의한 요약만 이곳에 와요. AI와 나눈 대화 원문과 ‘상담만 종료’한 상담은 볼 수 없어요.",
@@ -18,6 +20,8 @@ const AREAS = {
     section: "관리자",
     href: "/admin",
     archiveHref: "/admin/archive",
+    docsHref: "/admin/documents",
+    docsNav: "학교 자료",
     nav: "공유받은 문의",
     noteTitle: "담임이 공유한 문의만",
     note: "담임 선생님(또는 학년부장 선생님)이 공유한 문의만 이곳에 와요. 학부모가 확인한 요약과 답변만 보이고, 대화 원문은 볼 수 없어요.",
@@ -32,17 +36,25 @@ export function TeacherShell({
   area = "teacher",
   current = "inbox",
   archivedCount = 0,
+  showDocs = true,
   children,
 }: {
   userName: string;
   newCount: number;
   area?: keyof typeof AREAS;
-  // 지금 보고 있는 메뉴: 업무함(답변 대기·최근) / 지난 문의함(답변 후 2일 지난 문의)
-  current?: "inbox" | "archive";
+  // 지금 보고 있는 메뉴: 업무함(답변 대기·최근) / 지난 문의함(답변 후 2일 지난 문의) / 학교 자료(v2 C)
+  current?: "inbox" | "archive" | "docs";
   archivedCount?: number;
+  // 학교 자료 메뉴 (교사: 학급 자료 등록 / 교장·교감: 학교·교육법률 자료 등록). 학년부장은 등록하지 않아 숨김.
+  showDocs?: boolean;
   children: ReactNode;
 }) {
   const a = AREAS[area];
+  const links = [
+    { key: "inbox", href: a.href, label: a.nav, icon: "fileText" as const },
+    { key: "archive", href: a.archiveHref, label: "지난 문의함", icon: "clock" as const },
+    ...(showDocs ? [{ key: "docs", href: a.docsHref, label: a.docsNav, icon: "book" as const }] : []),
+  ];
   const navClass = (on: boolean) =>
     "flex min-h-[46px] items-center gap-3 rounded-xl px-3 text-[15px] " +
     (on ? "bg-ai-bubble font-bold text-white" : "text-[#D9EBDF] hover:bg-[#1C5E49]");
@@ -78,6 +90,12 @@ export function TeacherShell({
             지난 문의함
             {archivedCount > 0 && <span className="ml-auto text-[13px] text-[#9CC4AE]">{archivedCount}</span>}
           </Link>
+          {showDocs && (
+            <Link href={a.docsHref} aria-current={current === "docs" ? "page" : undefined} className={navClass(current === "docs")}>
+              <Icon name="book" />
+              {a.docsNav}
+            </Link>
+          )}
         </div>
         <div className="mt-auto flex flex-col gap-2 rounded-2xl bg-[#1C5E49] p-4 text-[13px] leading-[1.6]">
           <span className="flex items-center gap-2 font-bold text-white">
@@ -92,16 +110,23 @@ export function TeacherShell({
         <header className="flex flex-wrap items-center justify-between gap-3.5 border-b border-[#E3EEDD] bg-white px-4 py-3.5 sm:px-8">
           <Link href={a.href} className="flex items-center gap-2.5 lg:hidden">
             <LogoMark size={36} />
-            <span className="text-lg font-black text-heading">{current === "archive" ? "지난 문의함" : a.nav}</span>
+            <span className="text-lg font-black text-heading">{links.find((l) => l.key === current)?.label ?? a.nav}</span>
           </Link>
-          {/* 좁은 화면: 사이드바 대신 업무함 ↔ 지난 문의함 바로가기 */}
-          <Link
-            href={current === "archive" ? a.href : a.archiveHref}
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line px-3 text-sm font-bold text-deep-green lg:hidden"
-          >
-            <Icon name={current === "archive" ? "fileText" : "clock"} size={16} />
-            {current === "archive" ? a.nav : "지난 문의함"}
-          </Link>
+          {/* 좁은 화면: 사이드바 대신 다른 메뉴 바로가기 */}
+          <span className="flex flex-wrap gap-1.5 lg:hidden">
+            {links
+              .filter((l) => l.key !== current)
+              .map((l) => (
+                <Link
+                  key={l.key}
+                  href={l.href}
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line px-3 text-sm font-bold text-deep-green"
+                >
+                  <Icon name={l.icon} size={16} />
+                  {l.label}
+                </Link>
+              ))}
+          </span>
           <span className="hidden text-sm text-muted lg:inline">{a.header}</span>
           <LogoutButton userName={userName} />
         </header>

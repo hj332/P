@@ -3,7 +3,7 @@
 --
 -- 사용법: Supabase 대시보드 → SQL Editor 에 이 파일 전체를 붙여넣고 [Run].
 --   - 0001_init.sql, 0002_parent_messages_only.sql, 0003_replies_escalation.sql, 0004_manager_escalation.sql,
---     0005_manager_forward_notes.sql, 0006_risk_repeat_stats.sql, 0007_levels_admin_notes_grade_stats.sql,
+--     0005_manager_forward_notes.sql, 0006_risk_repeat_stats.sql, 0007_levels_admin_notes_grade_stats.sql, 0008_documents_rag.sql,
 --     seed_test.sql, seed_admin.sql 을 먼저 실행해 둘 것.
 --   - 테스트 계정(parent1/2, teacher1/2, admin1 교장·교감, admin2 3학년 부장)으로 "로그인한 것처럼" 바꿔 가며 확인한다.
 --     비밀번호는 필요 없다.
@@ -44,6 +44,7 @@ declare
   v_mg uuid := (select id from auth.users where email = 'admin2@example.com');
   v_school uuid; v_st1 uuid; v_st2 uuid;
   v_conv uuid; v_conv2 uuid; v_conv3 uuid; v_conv4 uuid; v_case uuid; v_case2 uuid; v_case3 uuid;
+  v_doc_school uuid; v_doc_c32 uuid; v_doc_c33 uuid; v_cls1 uuid; v_cls2 uuid;
   v_before_cases int; v_before_convs int; v_before_audit int; v_before_replies int;
   -- 테스트 전에 관리자·학년부장이 이미 보고 있던 것 (실제 공유된 문의가 있을 수 있음)
   b_ad_st int; b_ad_st2 int; b_ad_cls int; b_ad_cls1 int; b_ad_pb int;
@@ -54,6 +55,9 @@ begin
   end if;
   if to_regclass('public.case_replies') is null then
     raise exception '0003_replies_escalation.sql 이 아직 실행되지 않았습니다.';
+  end if;
+  if to_regclass('public.documents') is null then
+    raise exception '0008_documents_rag.sql 이 아직 실행되지 않았습니다.';
   end if;
   if to_regprocedure('public.add_case_note(uuid,text,text)') is null then
     raise exception '0007_levels_admin_notes_grade_stats.sql 이 아직 실행되지 않았습니다.';
@@ -76,6 +80,8 @@ begin
   select school_id into v_school from public.profiles where id = v_pa;
   select student_id into v_st1 from public.student_relations where parent_id = v_pa;
   select student_id into v_st2 from public.student_relations where parent_id = v_pb;
+  select class_id into v_cls1 from public.students where id = v_st1;
+  select class_id into v_cls2 from public.students where id = v_st2;
   if v_school is null or v_st1 is null or v_st2 is null then
     raise exception 'seed_test.sql 이 아직 실행되지 않았습니다.';
   end if;
@@ -830,6 +836,143 @@ begin
     select count(*) into n from public.case_share_notes where case_id in (v_case2, v_case3);
     r := r || jsonb_build_object('t','학부모A: 교장·교감 메모도 안 보임','want','0','got',n::text);
 
+    -- =========== 0008: 학교 자료 (문서·조각·검색) ===========
+    -- 테스트용 벡터: 768차원, 문서는 모두 같은 방향이라 검색하면 볼 수 있는 조각이 전부 나온다
+    reset role; perform pg_temp.login(v_ad);
+    begin
+      insert into public.documents (school_id, scope, title, body, created_by)
+      values (v_school, 'SCHOOL', '[점검] 학교 자료', '[점검] 본문', v_ad) returning id into v_doc_school;
+      insert into public.document_chunks (document_id, chunk_index, content, embedding)
+      values (v_doc_school, 0, '[점검] 학교 조각', array_fill(0.1::real, array[768])::extensions.vector);
+      r := r || jsonb_build_object('t','관리자: 학교 자료 등록 (조각 포함)','want','성공','got','성공');
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학교 자료 등록 (조각 포함)','want','성공','got','실패','d',sqlerrm);
+    end;
+    begin
+      insert into public.documents (school_id, scope, class_id, title, body, created_by)
+      values (v_school, 'CLASS', v_cls1, '[점검] 관리자가 올린 학급 자료', '본문', v_ad);
+      r := r || jsonb_build_object('t','관리자: 학급 자료 등록 (담임만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학급 자료 등록 (담임만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_t1);
+    begin
+      insert into public.documents (school_id, scope, class_id, title, body, created_by)
+      values (v_school, 'CLASS', v_cls1, '[점검] 3-2 학급 자료', '본문', v_t1)
+      returning id into v_doc_c32;
+      insert into public.document_chunks (document_id, chunk_index, content, embedding)
+      values (v_doc_c32, 0, '[점검] 3-2 조각', array_fill(0.1::real, array[768])::extensions.vector);
+      r := r || jsonb_build_object('t','담임1: 우리 반 학급 자료 등록','want','성공','got','성공');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 우리 반 학급 자료 등록','want','성공','got','실패','d',sqlerrm);
+    end;
+    begin
+      insert into public.documents (school_id, scope, class_id, title, body, created_by)
+      values (v_school, 'CLASS', v_cls2, '[점검] 남의 반 자료', '본문', v_t1);
+      r := r || jsonb_build_object('t','담임1: 다른 반 학급 자료 등록','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 다른 반 학급 자료 등록','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      insert into public.documents (school_id, scope, title, body, created_by)
+      values (v_school, 'SCHOOL', '[점검] 교사가 올린 학교 자료', '본문', v_t1);
+      r := r || jsonb_build_object('t','담임1: 학교 자료 등록 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 학교 자료 등록 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      insert into public.document_chunks (document_id, chunk_index, content, embedding)
+      values (v_doc_school, 1, '[점검] 남의 문서에 조각 끼워 넣기', array_fill(0.1::real, array[768])::extensions.vector);
+      r := r || jsonb_build_object('t','담임1: 학교 자료에 조각 끼워 넣기','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 학교 자료에 조각 끼워 넣기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      delete from public.documents where id = v_doc_school;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','담임1: 학교 자료 지우기','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 학교 자료 지우기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      update public.documents set body = '[점검] 몰래 고침' where id = v_doc_c32;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','담임1: 등록한 자료 직접 고치기 (지우고 다시 등록)','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','담임1: 등록한 자료 직접 고치기 (지우고 다시 등록)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_t2);
+    begin
+      insert into public.documents (school_id, scope, class_id, title, body, created_by)
+      values (v_school, 'CLASS', v_cls2, '[점검] 3-3 학급 자료', '본문', v_t2)
+      returning id into v_doc_c33;
+      insert into public.document_chunks (document_id, chunk_index, content, embedding)
+      values (v_doc_c33, 0, '[점검] 3-3 조각', array_fill(0.1::real, array[768])::extensions.vector);
+    exception when others then
+      r := r || jsonb_build_object('t','(준비) 담임2 학급 자료','want','성공','got','실패','d',sqlerrm);
+    end;
+    select count(*) into n from public.documents where id = v_doc_c32;
+    r := r || jsonb_build_object('t','담임2: 다른 반 학급 자료는 안 보임','want','0','got',n::text);
+
+    reset role; perform pg_temp.login(v_pa);
+    select count(*) into n from public.documents where id in (v_doc_school, v_doc_c32);
+    r := r || jsonb_build_object('t','학부모A: 학교 자료 + 자녀 반 학급 자료가 보임','want','2','got',n::text);
+    select count(*) into n from public.documents where id = v_doc_c33;
+    r := r || jsonb_build_object('t','학부모A: 다른 반 학급 자료는 안 보임','want','0','got',n::text);
+    select count(*) into n from public.document_chunks where document_id = v_doc_c33;
+    r := r || jsonb_build_object('t','학부모A: 다른 반 학급 자료 조각도 안 보임','want','0','got',n::text);
+    select count(*) into n from public.match_document_chunks(array_fill(0.1::real, array[768])::extensions.vector, null, 20)
+    where document_id in (v_doc_school, v_doc_c32, v_doc_c33);
+    r := r || jsonb_build_object('t','학부모A: 검색하면 볼 수 있는 자료(학교·자녀 반)만 나옴','want','2','got',n::text);
+    begin
+      insert into public.documents (school_id, scope, title, body, created_by)
+      values (v_school, 'SCHOOL', '[점검] 학부모가 올린 자료', '본문', v_pa);
+      r := r || jsonb_build_object('t','학부모A: 학교 자료 등록','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','학부모A: 학교 자료 등록','want','막힘','got','막힘','d',sqlerrm);
+    end;
+    begin
+      delete from public.documents where id = v_doc_c32;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','학부모A: 학급 자료 지우기','want','막힘','got', case when n = 0 then '막힘' else '통과됨' end);
+    exception when others then
+      r := r || jsonb_build_object('t','학부모A: 학급 자료 지우기','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_pb);
+    select count(*) into n from public.documents where id in (v_doc_school, v_doc_c33);
+    r := r || jsonb_build_object('t','학부모B: 학교 자료 + 자녀 반(3-3) 자료가 보임','want','2','got',n::text);
+    select count(*) into n from public.documents where id = v_doc_c32;
+    r := r || jsonb_build_object('t','학부모B: 3-2 학급 자료는 안 보임','want','0','got',n::text);
+
+    reset role; perform pg_temp.login(v_mg);
+    select count(*) into n from public.documents where id in (v_doc_school, v_doc_c32, v_doc_c33);
+    r := r || jsonb_build_object('t','학년부장: 학교 자료 + 맡은 학년 학급 자료가 보임','want','3','got',n::text);
+    begin
+      insert into public.documents (school_id, scope, title, body, created_by)
+      values (v_school, 'LEGAL', '[점검] 학년부장 자료', '본문', v_mg);
+      r := r || jsonb_build_object('t','학년부장: 교육·법률 자료 등록 (교장·교감만)','want','막힘','got','통과됨');
+    exception when others then
+      r := r || jsonb_build_object('t','학년부장: 교육·법률 자료 등록 (교장·교감만)','want','막힘','got','막힘','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(v_ad);
+    select count(*) into n from public.documents where id in (v_doc_school, v_doc_c32, v_doc_c33);
+    r := r || jsonb_build_object('t','관리자: 학교 전체 자료가 보임','want','3','got',n::text);
+    begin
+      delete from public.documents where id = v_doc_c33;
+      get diagnostics n = row_count;
+      r := r || jsonb_build_object('t','관리자: 학급 자료 정리(지우기)','want','1','got',n::text);
+    exception when others then
+      r := r || jsonb_build_object('t','관리자: 학급 자료 정리(지우기)','want','1','got','실패','d',sqlerrm);
+    end;
+
+    reset role; perform pg_temp.login(null);
+    select count(*) into n from public.documents;
+    r := r || jsonb_build_object('t','비로그인: 학교 자료 안 보임','want','0','got',n::text);
+
     -- ---------- 학부모A : [상담만 종료] ----------
     reset role; perform pg_temp.login(v_pa);
     begin
@@ -894,6 +1037,8 @@ begin
   r := r || jsonb_build_object('t','(뒷정리) 테스트 열람 기록이 남지 않음','want',v_before_audit::text,'got',n::text);
   select count(*) into n from public.case_replies;
   r := r || jsonb_build_object('t','(뒷정리) 테스트 답변이 남지 않음','want',v_before_replies::text,'got',n::text);
+  select count(*) into n from public.documents where title like '[점검]%';
+  r := r || jsonb_build_object('t','(뒷정리) 테스트 학교 자료가 남지 않음','want','0','got',n::text);
 
   insert into _rls_result (no, test, want, got, ok, detail)
   select i, e->>'t', e->>'want', e->>'got', (e->>'want') = (e->>'got'), e->>'d'

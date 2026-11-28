@@ -279,6 +279,7 @@ function CaseDetail({ c, cases, mode, viewerRole }: { c: InboxCase; cases: Inbox
       )}
 
       <RiskBox c={c} cases={cases} />
+      <RelatedDocs caseId={c.id} mode={mode} />
 
       {c.notes.length > 0 && <ShareNotes c={c} />}
 
@@ -571,6 +572,55 @@ function RiskBox({ c, cases }: { c: InboxCase; cases: InboxCase[] }) {
           {repeatEscalated(r) && " → 이전 답변 뒤 같은 요구라 Level 3(관리자 검토 필요)으로 표시했어요"}
         </p>
       )}
+    </section>
+  );
+}
+
+// 관련 학교 자료 (v2 C) — 학부모가 확인한 요약으로 학교 자료를 찾아 보여 준다. 참고용.
+type RelatedDoc = { documentId: string; title: string; source: string; scope: string; isSample: boolean; excerpt: string };
+function RelatedDocs({ caseId, mode }: { caseId: string; mode: Mode }) {
+  const [docs, setDocs] = useState<RelatedDoc[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/${mode}/cases/${caseId}/related`)
+      .then((r) => (r.ok ? r.json() : { docs: [] }))
+      .then((b: { docs?: RelatedDoc[] }) => alive && setDocs(b.docs ?? []))
+      .catch(() => alive && setDocs([]));
+    return () => {
+      alive = false;
+    };
+  }, [caseId, mode]);
+
+  if (docs === null) {
+    return (
+      <p className="m-0 mx-5 mt-4 flex items-center gap-2 text-[13px] text-muted sm:mx-[30px]">
+        <Icon name="search" size={14} />
+        관련 학교 자료를 찾고 있어요…
+      </p>
+    );
+  }
+  if (!docs.length) return null;
+  return (
+    <section aria-label="관련 학교 자료" className="mx-5 mt-4 flex flex-col gap-2 rounded-2xl border border-[#D6E5CF] bg-white px-5 py-4 sm:mx-[30px]">
+      <span className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="flex items-center gap-2 text-sm text-ok-fg">
+          <Icon name="book" size={16} />
+          관련 학교 자료
+        </strong>
+        <span className="text-xs text-muted">요약과 비슷한 자료를 찾은 것이에요 · 참고용</span>
+      </span>
+      {docs.map((d) => (
+        <div key={d.documentId} className="flex flex-col gap-1 rounded-xl bg-bg-soft px-4 py-3">
+          <span className="flex flex-wrap items-center gap-2 text-[13px]">
+            <strong className="text-ink">{d.title}</strong>
+            {d.isSample && <span className="text-muted">(시연용 가상 자료)</span>}
+            <a href={`/${mode}/documents/${d.documentId}`} className="font-bold text-deep-green underline underline-offset-4">
+              원문 보기
+            </a>
+          </span>
+          <p className="m-0 line-clamp-3 text-[13px] leading-[1.6] whitespace-pre-wrap text-body">{d.excerpt}</p>
+        </div>
+      ))}
     </section>
   );
 }

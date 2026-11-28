@@ -18,7 +18,7 @@ async function Archive() {
   const roleLabel = profile.role === "MANAGER" ? "학년부장" : "교장·교감";
 
   return (
-    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen} current="archive" archivedCount={archived.length}>
+    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen} current="archive" archivedCount={archived.length} showDocs={profile.role === "ADMIN"}>
       <main className="flex flex-col gap-[26px] px-4 pt-[30px] pb-12 sm:px-8">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm text-muted">{roleLabel} · 지난 문의함</span>

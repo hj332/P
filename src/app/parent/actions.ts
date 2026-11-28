@@ -5,6 +5,8 @@ import { requireRole } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyCase } from "@/lib/ai/classify";
 import { maskChildName } from "@/lib/ai/reply-draft";
+import { searchDocuments, searchLegalDocs, type FoundDoc } from "@/lib/doc-search";
+import { citedDocs, extractSourceMarker, legalNeeds, type SourceRef } from "@/lib/documents";
 
 // "11월 20일" (한국 시간)
 function formatMonthDay(iso: string) {
@@ -20,7 +22,14 @@ import { isOpen, parseSummary, splitSummaryMarker, withSummaryFlag } from "@/lib
 // 관리자 키는 AI 답변(role = 'assistant') 저장과, 전달 직후 분류(classifyCase)에서만 쓴다.
 
 // suggestSummary: AI 가 "정리 단계" 표시를 붙인 답변인지 (화면이 정리 제안을 띄우는 기준)
-export type ChatMessage = { id: string; role: "parent" | "assistant"; content: string; suggestSummary?: boolean };
+// sources: AI 답변이 근거로 쓴 학교 자료 (근거 카드, 0008)
+export type ChatMessage = {
+  id: string;
+  role: "parent" | "assistant";
+  content: string;
+  suggestSummary?: boolean;
+  sources?: SourceRef[] | null;
+};
 
 export type SendResult =
   | { ok: true; conversationId: string; parent: ChatMessage; assistant: ChatMessage; warning?: string }
@@ -140,24 +149,49 @@ async function replyAndSave(
   // 앞선 학부모 메시지 중 위험 표현이 있었는지 (평가 C06: 다음 턴에 안전을 잊어버리는 문제)
   const parentTexts = history.filter((m) => m.role === "parent").map((m) => m.content);
   const earlierRisk = parentTexts.slice(0, -1).some(needsEmergencyNotice);
+  // 학교 자료 검색 (학부모 권한 RLS — 우리 학교 자료 + 자녀 반 자료만). 최근 학부모 말 두 개로 찾는다
+  // ("언제까지예요?" 처럼 짧은 말도 앞 맥락과 함께 찾도록).
+  const classId = conv.student_id
+    ? ((await supabase.from("students").select("class_id").eq("id", conv.student_id).maybeSingle()).data?.class_id ?? null)
+    : null;
+  const recentText = parentTexts.slice(-2).join("\n");
+  const [found, required] = await Promise.all([
+    searchDocuments(supabase, recentText, classId),
+    // 선생님 신고·고소 이야기 → 허위 신고(무고) 자료, 아동학대 신고면 아동학대 기준 자료도 (항상 근거로 함께 보여 준다)
+    searchLegalDocs(supabase, legalNeeds(recentText)),
+  ]);
+  const docs = [...found, ...required.filter((r) => !found.some((f) => f.documentId === r.documentId))];
+
   let reply: string | null = null;
   let failMessage = geminiFailMessage(null);
   try {
-    reply = await generateCounselorReply(await promptFor(supabase, conv.student_id, notice, earlierRisk), history);
+    reply = await generateCounselorReply(await promptFor(supabase, conv.student_id, notice, earlierRisk, docs), history);
   } catch (e) {
     console.error("[gemini]", e instanceof Error ? e.message : e);
     failMessage = geminiFailMessage(e);
   }
   if (!reply && !notice) return { error: failMessage };
 
-  const content = [notice ? EMERGENCY_NOTICE : null, reply].filter(Boolean).join("\n\n");
+  // 답변 끝의 [[근거:1,2]] 를 떼고, 실제로 쓴 자료만 근거로 저장한다 (화면의 근거 카드)
+  // (표시가 없으면 답변에 제목이 그대로 나온 자료를 근거로 본다 — citedDocs)
+  const marked = extractSourceMarker(reply ?? "");
+  const cited = citedDocs(marked.text, marked.indices, docs);
+  if (reply) for (const r of required) if (!cited.some((c) => c.documentId === r.documentId)) cited.push(r);
+  const sources: SourceRef[] = cited.map((d) => ({
+    documentId: d.documentId,
+    title: d.title,
+    source: d.source,
+    isSample: d.isSample,
+  }));
+
+  const content = [notice ? EMERGENCY_NOTICE : null, reply ? marked.text : null].filter(Boolean).join("\n\n");
 
   // 관리자 키로 저장 — 호출하는 쪽에서 본인 상담임을 RLS 로 이미 확인했다.
   const admin = createAdminClient();
   const { data: aiRow, error: aiErr } = await admin
     .from("messages")
-    .insert({ conversation_id: conv.id, role: "assistant", content })
-    .select("id, role, content")
+    .insert({ conversation_id: conv.id, role: "assistant", content, sources: sources.length ? sources : null })
+    .select("id, role, content, sources")
     .single();
   if (aiErr || !aiRow) {
     console.error("[assistant insert]", aiErr?.message);
@@ -171,6 +205,7 @@ async function promptFor(
   studentId: string | null,
   emergencyNoticeShown: boolean,
   earlierRisk: boolean,
+  docs: FoundDoc[] = [],
 ) {
   const [{ data: school }, { data: student }, { data: prevCases }] = await Promise.all([
     supabase.from("schools").select("name").maybeSingle(),
@@ -210,6 +245,8 @@ async function promptFor(
     emergencyNoticeShown,
     earlierRisk,
     previousCases,
+    // 아이 이름은 자료에도 넣지 않는다 (학교 자료에는 보통 없지만 학급 안내 등에 있을 수 있어 가림)
+    documents: docs.map((d) => ({ title: d.title, source: d.source, content: maskChildName(d.content, st?.name) })),
   });
 }
 

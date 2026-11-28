@@ -22,7 +22,7 @@ async function AdminList() {
   const roleLabel = profile.role === "MANAGER" ? "학년부장" : "교장·교감";
 
   return (
-    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen} archivedCount={archived.length}>
+    <TeacherShell area="admin" userName={profile.display_name} newCount={unseen} archivedCount={archived.length} showDocs={profile.role === "ADMIN"}>
       <main className="flex flex-col gap-[26px] px-4 pt-[30px] pb-12 sm:px-8">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm text-muted">{roleLabel} · 담임 선생님이 공유한 문의</span>

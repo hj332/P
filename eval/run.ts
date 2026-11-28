@@ -15,6 +15,9 @@ import { generateCounselorReply, generateText, type ChatTurn } from "../src/lib/
 import { summarizeConversation } from "../src/lib/ai/summarize";
 import { buildDraftRequest, draftTeacherReply } from "../src/lib/ai/reply-draft";
 import { buildClassifyRequest, classifySummary, type PreviousCase } from "../src/lib/ai/classify";
+import { embedTexts } from "../src/lib/ai/embed";
+import { makeDocQuery } from "../src/lib/ai/doc-query";
+import { chunkDocument, citedDocs, extractSourceMarker, pickRelevant } from "../src/lib/documents";
 import { EMERGENCY_NOTICE, needsEmergencyNotice } from "../src/lib/ai/safety";
 import { splitSummaryMarker, withSummaryFlag, type Summary, type SummaryKey } from "../src/lib/summary";
 
@@ -27,13 +30,38 @@ type CounselCase = {
   history: Turn[];
   // 이 학부모가 예전에 학교에 전달한 문의와 답변 (반복 문의 확인, 기획안 9장)
   previousCases?: { date: string; topic: string; reply: string | null }[];
+  // 검색으로 찾았다고 치고 AI 에 넘길 학교 자료 (scripts/sample-documents.json 의 key)
+  documents?: string[];
   expect: {
     emergency?: boolean;
     summaryMarker?: boolean;
     question?: boolean;
     prohibited?: string[];
     judge?: string[];
+    include?: string[][]; // 답변에 꼭 들어갈 말 (안쪽 배열은 "이 중 하나")
+    sourceMarker?: boolean; // 학교 자료를 근거로 썼다고 [[근거:n]] 을 붙여야 하는지
   };
+};
+type RetrievalCase = {
+  id: string;
+  query: string;
+  // 있으면: 교사 업무함 "관련 학교 자료"처럼 문의 요약 → 규정 말투 검색어(makeDocQuery) → 검색
+  summary?: Summary;
+  classKey?: string; // 학부모 자녀 반 (이 반 학급 자료만 보임) 예: "3-2"
+  expect: string[]; // 찾아야 하는 자료 key. 빈 배열 = 아무것도 찾지 않아야 함 (expectAny 가 없을 때)
+  expectAny?: string[]; // 이 중 하나만 찾으면 됨 (비슷하게 관련 있는 자료가 둘 이상일 때)
+  notExpect?: string[];
+};
+
+// ---------- 학교 자료 (가상) ----------
+type SampleDoc = { key: string; scope: string; grade?: number; classNo?: number; title: string; source: string; body: string };
+const SAMPLE_DOCS = (
+  JSON.parse(fs.readFileSync(path.join(path.resolve(import.meta.dirname), "../scripts/sample-documents.json"), "utf8")) as { documents: SampleDoc[] }
+).documents;
+const docByKey = (k: string) => {
+  const d = SAMPLE_DOCS.find((x) => x.key === k);
+  if (!d) throw new Error(`없는 자료 key: ${k}`);
+  return d;
 };
 type SummaryCase = {
   id: string;
@@ -82,6 +110,7 @@ const SET = JSON.parse(fs.readFileSync(path.join(ROOT, "eval-set.json"), "utf8")
   summary: SummaryCase[];
   draft: DraftCase[];
   classify: ClassifyCase[];
+  retrieval: RetrievalCase[];
 };
 
 // ---------- 인자 ----------
@@ -188,8 +217,17 @@ async function runCounsel(c: CounselCase, run: number): Promise<Result> {
     emergencyNoticeShown: notice,
     earlierRisk,
     previousCases: c.previousCases,
+    documents: c.documents?.map((k) => {
+      const d = docByKey(k);
+      return { title: d.title, source: d.source, content: chunkDocument(d.title, d.body).join("\n\n") };
+    }),
   });
-  const raw = await call(() => generateCounselorReply(system, toChat(c.history)));
+  const rawFull = await call(() => generateCounselorReply(system, toChat(c.history)));
+  // 학교 자료 근거 표시 [[근거:n]] 는 화면에 보이지 않는다 (actions.ts 와 같게 떼어 냄)
+  const marker = extractSourceMarker(rawFull);
+  const givenDocs = (c.documents ?? []).map((k, i) => ({ documentId: String(i), title: docByKey(k).title }));
+  const cited = citedDocs(marker.text, marker.indices, givenDocs);
+  const raw = marker.text;
   const { suggestSummary } = splitSummaryMarker(raw);
   const visible = withSummaryFlag({ content: raw }).content; // 화면에 보이는 AI 답변
   const shown = [notice ? EMERGENCY_NOTICE : null, visible].filter(Boolean).join("\n\n"); // 학부모가 실제로 보는 전체
@@ -213,6 +251,18 @@ async function runCounsel(c: CounselCase, run: number): Promise<Result> {
     checks.push({ name: "추가 질문을 함", pass: q >= 1, detail: `질문 ${q}개`, kind: "auto" });
     checks.push({ name: "질문은 한 번에 2개 이하", pass: q <= 2, detail: `질문 ${q}개`, kind: "auto" });
   }
+  if (e.sourceMarker !== undefined)
+    checks.push({
+      name: e.sourceMarker ? "학교 자료를 근거로 썼다고 표시 ([[근거]])" : "관계없는 자료를 근거로 표시하지 않음",
+      // 앱과 같은 기준(citedDocs): [[근거]] 표시, 없으면 답변에 자료 제목이 그대로 나온 경우
+      pass: (cited.length > 0) === e.sourceMarker,
+      detail: `근거 표시 ${marker.indices.join(",") || "없음"} · 근거 카드 ${cited.map((d) => d.title).join(", ") || "없음"}`,
+      kind: "auto",
+    });
+  for (const alts of e.include ?? []) {
+    const ok = alts.some((a) => visible.includes(a));
+    checks.push({ name: `답변에 '${alts.join(" / ")}' 포함`, pass: ok, kind: "auto" });
+  }
   for (const p of COMMON_PROHIBITED) {
     const m = visible.match(p.re);
     checks.push({ name: `금지 표현 없음: ${p.name}`, pass: !m, detail: m ? `"${m[0]}"` : undefined, kind: "auto" });
@@ -221,7 +271,13 @@ async function runCounsel(c: CounselCase, run: number): Promise<Result> {
     const m = visible.match(new RegExp(src));
     checks.push({ name: `이 문항 금지 표현 없음: /${src}/`, pass: !m, detail: m ? `"${m[0]}"` : undefined, kind: "auto" });
   }
-  checks.push(...(await judge(transcript(c.history), shown, e.judge ?? [])));
+  // 채점관에게도 AI 가 받은 학교 자료를 보여 준다 (안 보여 주면 자료에 있는 내용을 "지어냈다"고 잘못 채점함)
+  const docContext = c.documents?.length
+    ? `\n\n## 상담 AI 가 받은 학교 자료 (이 안의 내용은 지어낸 것이 아님)\n${c.documents
+        .map((k) => `[${docByKey(k).title}]\n${docByKey(k).body}`)
+        .join("\n\n")}`
+    : "";
+  checks.push(...(await judge(transcript(c.history) + docContext, shown, e.judge ?? [])));
 
   return { id: c.id, group: `상담 AI · ${c.category}`, title: c.title, run, checks, output: shown };
 }
@@ -315,6 +371,49 @@ async function runClassify(c: ClassifyCase, run: number): Promise<Result> {
   const bad = r.reason.match(/악성|진상|과민|민원인|블랙/);
   checks.push({ name: "근거에 학부모를 평가하는 말 없음", pass: !bad, detail: bad ? `"${bad[0]}"` : undefined, kind: "auto" });
   return { id: c.id, group: "분류 AI", title: c.title, run, checks, output: `${got}\n근거: ${r.reason}\n\n[입력]\n${buildClassifyRequest(c.summary, c.previous ?? [])}` };
+}
+
+// ---------- 6) 학교 자료 검색 (임베딩 + 고르기 규칙) ----------
+// 실제 DB 대신 가상 자료를 메모리에서 임베딩해, 질문마다 맞는 자료를 고르는지 본다 (doc-search.ts 와 같은 pickRelevant).
+let docIndex: { key: string; scope: string; classKey: string | null; vec: number[] }[] | null = null;
+const cosine = (a: number[], b: number[]) => {
+  let s = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    s += a[i] * b[i];
+    na += a[i] ** 2;
+    nb += b[i] ** 2;
+  }
+  return s / Math.sqrt(na * nb);
+};
+async function runRetrieval(c: RetrievalCase): Promise<Result> {
+  if (!docIndex) {
+    const items = SAMPLE_DOCS.flatMap((d) =>
+      chunkDocument(d.title, d.body).map((text) => ({ key: d.key, scope: d.scope, classKey: d.scope === "CLASS" ? `${d.grade}-${d.classNo}` : null, text })),
+    );
+    const vecs = await call(() => embedTexts(items.map((i) => i.text), "DOCUMENT"));
+    docIndex = items.map((i, j) => ({ key: i.key, scope: i.scope, classKey: i.classKey, vec: vecs[j] }));
+  }
+  const searchText = c.summary ? ((await call(() => makeDocQuery(c.summary!))) ?? c.summary.topic) : c.query;
+  const [q] = await call(() => embedTexts([searchText], "QUERY"));
+  // 학부모 권한처럼: 학급 자료는 자녀 반 것만
+  const visibleDocs = docIndex.filter((d) => d.scope !== "CLASS" || d.classKey === (c.classKey ?? "3-2"));
+  const scored = visibleDocs.map((d) => ({ key: d.key, similarity: cosine(q, d.vec) }));
+  const picked = pickRelevant(scored, 3);
+  const keys = [...new Set(picked.map((p) => p.key))];
+  const top = [...scored].sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+  const checks: Check[] = [];
+  if (c.expect.length === 0 && !c.expectAny) checks.push({ name: "관련 없는 질문에는 자료를 고르지 않음", pass: keys.length === 0, detail: keys.join(", ") || undefined, kind: "auto" });
+  if (c.expectAny) checks.push({ name: `${c.expectAny.join(" / ")} 중 하나를 찾음`, pass: c.expectAny.some((k) => keys.includes(k)), detail: keys.join(", ") || "없음", kind: "auto" });
+  for (const k of c.expect) checks.push({ name: `'${k}' 자료를 찾음`, pass: keys.includes(k), detail: keys.join(", ") || "없음", kind: "auto" });
+  for (const k of c.notExpect ?? []) checks.push({ name: `'${k}' 자료는 고르지 않음`, pass: !keys.includes(k), detail: keys.join(", ") || "없음", kind: "auto" });
+  return {
+    id: c.id,
+    group: "학교 자료 검색",
+    title: c.query,
+    run: 1,
+    checks,
+    output: `${c.summary ? `검색어: ${searchText}\n` : ""}고른 자료: ${keys.join(", ") || "없음"}\n상위 3: ${top.map((t) => `${t.key}:${t.similarity.toFixed(3)}`).join("  ")}`,
+  };
 }
 
 // ---------- 보고서 ----------
@@ -412,6 +511,19 @@ async function main() {
         results.push({ id: c.id, group: "답변 초안 AI", title: c.title, run, checks: [], output: "", error: msg.slice(0, 200) });
         console.log(` ⚠️ ${msg.slice(0, 80)}`);
       }
+    }
+  }
+
+  for (const c of pick(SET.retrieval ?? [])) {
+    process.stdout.write(`▶ ${c.id} ${c.query} …`);
+    try {
+      const r = await runRetrieval(c);
+      results.push(r);
+      console.log(r.checks.every((x) => x.pass) ? " ✓" : ` ✗ (${r.checks.filter((x) => !x.pass).length}개 실패)`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      results.push({ id: c.id, group: "학교 자료 검색", title: c.query, run: 1, checks: [], output: "", error: msg.slice(0, 200) });
+      console.log(` ⚠️ ${msg.slice(0, 80)}`);
     }
   }
 

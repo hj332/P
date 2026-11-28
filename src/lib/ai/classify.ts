@@ -3,6 +3,7 @@ import { Type, type Schema } from "@google/genai";
 import { generateText, GeminiError } from "./gemini";
 import { maskChildName } from "./reply-draft";
 import { detectRiskSignals, ruleFloor, type RiskSignal } from "./risk-rules";
+import { DOC_QUERY_RULE, cleanDocQuery } from "./doc-query";
 import { parseSummary, type Summary } from "@/lib/summary";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -26,6 +27,7 @@ export type Classification = {
   reason: string;
   repeatIndex: number | null; // previous 목록에서 같은 사안의 위치 (0부터), 없으면 null
   newFacts: boolean | null;
+  docQuery: string | null; // 관련 학교 자료를 찾을 "규정 말투" 검색어 (0009)
 };
 
 export const CLASSIFY_SYSTEM = `너는 학교에 전달된 학부모 문의를 분류하는 도우미다. 학부모에게는 보이지 않고, 선생님이 참고만 한다.
@@ -50,6 +52,9 @@ export const CLASSIFY_SYSTEM = `너는 학교에 전달된 학부모 문의를 �
 - new_facts: 같은 사안일 때, 이번 문의에 이전 문의에 없던 새로운 사실이나 새 요청이 있으면 true. 같은 사안이 아니면 false.
 - 반복 여부는 category 에 넣지 않는다. 내용만 보고 category 를 정한다. (반복에 따른 조정은 시스템이 한다)
 
+## doc_query
+${DOC_QUERY_RULE}
+
 ## reason
 선생님이 볼 근거 1~2문장. 요약에 있는 내용만 쓴다. 아이 이름·추측·평가하는 말("악성", "과민", "진상")은 쓰지 않는다.
 
@@ -65,9 +70,10 @@ const SCHEMA: Schema = {
     repeat_index: { type: Type.INTEGER },
     new_facts: { type: Type.BOOLEAN },
     reason: { type: Type.STRING },
+    doc_query: { type: Type.STRING },
   },
-  required: ["category", "high_risk", "repeat_index", "new_facts", "reason"],
-  propertyOrdering: ["category", "high_risk", "repeat_index", "new_facts", "reason"],
+  required: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query"],
+  propertyOrdering: ["category", "high_risk", "repeat_index", "new_facts", "reason", "doc_query"],
 };
 
 const summaryText = (s: Summary) =>
@@ -115,7 +121,14 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       maxOutputTokens: 600,
       jsonSchema: SCHEMA,
     });
-    const o = JSON.parse(raw) as { category: Category; high_risk: boolean; repeat_index: number; new_facts: boolean; reason: string };
+    const o = JSON.parse(raw) as {
+      category: Category;
+      high_risk: boolean;
+      repeat_index: number;
+      new_facts: boolean;
+      reason: string;
+      doc_query?: string;
+    };
     const aiCategory: Category = o.category in LEVEL_OF ? o.category : "GENERAL";
     const idx = Math.round(Number(o.repeat_index) || 0);
     const repeatIndex = idx >= 1 && idx <= previous.length ? idx - 1 : null;
@@ -131,6 +144,7 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       llmLevel: LEVEL_OF[aiCategory],
       ruleSignals: signals,
       reason: maskChildName(String(o.reason ?? "").trim(), childName).slice(0, 300),
+      docQuery: cleanDocQuery(maskChildName(String(o.doc_query ?? ""), childName)),
       repeatIndex,
       newFacts,
     };
@@ -145,6 +159,7 @@ export async function classifySummary(summary: Summary, previous: PreviousCase[]
       reason: signals.length ? "AI 분류 전 — 위험 표현 감지 결과만 있어요." : "",
       repeatIndex: null,
       newFacts: null,
+      docQuery: null,
     };
   }
 }
@@ -196,6 +211,7 @@ export async function classifyCase(caseId: string) {
     repeat_of: repeatCase?.id ?? null,
     repeat_has_reply: repeatCase ? previous[c.repeatIndex!].hasReply : false,
     repeat_new_facts: c.newFacts,
+    doc_query: c.docQuery,
     updated_at: new Date().toISOString(),
   });
   if (error) console.error("[classify] 저장 실패", error.message);
